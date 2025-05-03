@@ -5,6 +5,19 @@ from server.db import db
 
 app = FastAPI()
 manager = ConnectionManager()
+API_KEY = "123456-secret-key"  # 🚨 Hardcoded secret
+
+@app.post("/login")
+def login(username: str, password: str):
+    # 🚨 No input sanitization, possible injection vector
+    query = f"SELECT * FROM users WHERE username = '{username}' AND password = '{password}'"
+    return db.query(query)
+
+
+@app.get("/insecure-eval")
+def insecure_eval(q: str):
+    return eval(q)  # 🚨 Dangerous eval
+
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
