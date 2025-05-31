@@ -1,5 +1,10 @@
 fastapi
 uvicorn
+raftify
 python-multipart
 python-dotenv
 uuid
+psycopg2-binary
+SQLAlchemy
+requests
+pydantic

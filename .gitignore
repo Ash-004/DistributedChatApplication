@@ -160,3 +160,5 @@ cython_debug/
 #.idea/
 nudge.txt
 plan.txt
+start_node.sh
+start_all_nodes.sh
