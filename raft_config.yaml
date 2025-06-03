@@ -1,0 +1,22 @@
+raft:
+  nodes:
+    - node_id: node1
+      api_host: 127.0.0.1
+      api_port: 8001
+      rpc_host: 127.0.0.1
+      rpc_port: 8004
+    - node_id: node2
+      api_host: 127.0.0.1
+      api_port: 8002
+      rpc_host: 127.0.0.1
+      rpc_port: 8005
+    - node_id: node3
+      api_host: 127.0.0.1
+      api_port: 8003
+      rpc_host: 127.0.0.1
+      rpc_port: 8006
+
+etcd_config:
+  ttl: 30 # seconds, for node registration lease
+  heartbeat_interval: 10 # seconds, for refreshing the lease
+  leader_ttl: 30 # seconds, for leader key lease (optional, can be shorter than node TTL)

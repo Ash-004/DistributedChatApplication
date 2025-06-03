@@ -1,43 +1,67 @@
 import uuid
 import time
+import os
+import json # Added for persistent state
+import logging
+
+logger = logging.getLogger(__name__)
+from typing import List, Dict, Any, Optional, Tuple # Added Any, Optional, Tuple
+
 from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from server.internal.sequencer.persistent_sequencer import DistributedSequencer
-from server.internal.sequencer.raft_rpc import start_rpc_server
-from server.internal.sequencer import raft
+import uvicorn
+import asyncio # Added to fix NameError in periodic_save_raft_state
+import requests # Added for health checks
+
+# Cascade: Assuming these imports are still correct relative to the new structure
+from server.internal.sequencer.raft import RaftNode, PersistentSequencer # Added PersistentSequencer, changed DistributedSequencer to RaftNode
+from server.internal.sequencer.raft_rpc import start_rpc_server, RaftRPCClient
+from server.internal.sequencer import raft # RaftNode is in here
 from server.internal.storage.database import init_db, get_db
 from server.internal.storage.models import Room as RoomModel, Message as MessageModel, RoomParticipant
-import os
-import logging
-from typing import List, Dict
 
-app = FastAPI()
+from server.config import app_config # Import the global AppConfig instance
+from server.internal.discovery.etcd_client import EtcdClient # Import EtcdClient
+from server.internal.domain.models import Room as DomainRoom, User as DomainUser # Renamed to avoid conflict with Pydantic models
 
-# Initialize distributed sequencer
-node_id = "node1"
-peers = ["node2:8000", "node3:8000"]
-node_address = "localhost:8000"
-rpc_port = int(os.getenv("RPC_PORT", 8001))
-node_addresses = {
-    "node1": ("localhost", 12935),
-    "node2": ("localhost", 12936),
-    "node3": ("localhost", 12937)
-}
-sequencer = DistributedSequencer(
-    node_id=node_id,
-    peers=peers,
-    rpc_port=rpc_port,
-    node_addresses=node_addresses
-)
-# Start RPC server for Raft
-start_rpc_server(sequencer, rpc_port)
+# Define response models needed for API endpoints
+class NodeInfo(BaseModel):
+    id: str
+    api_address: str
+    rpc_address: str
+    role: str
+    term: Optional[int] = None
 
-# Initialize database
-@app.on_event("startup")
-def on_startup():
-    init_db()
+class LogEntry(BaseModel):
+    index: int
+    term: int
+    command: Dict[str, Any]
+    
+    
+class RaftState(BaseModel):
+    node_id: str
+    current_term: int
+    voted_for: Optional[str] = None
+    commit_index: int
+    last_applied: int
+    role: str
+    leader_id: Optional[str] = None
+    log_size: int
+
+class MessageResponse(BaseModel):
+    status: str
+    message_id: str
+    detail: Optional[str] = None
+
+class RoomResponse(BaseModel):
+    status: str
+    room_id: str
+    name: str
+    created_at: float
+    detail: Optional[str] = None
 
 class RoomCreate(BaseModel):
     name: str
@@ -47,165 +71,413 @@ class MessageCreate(BaseModel):
     user_id: str
     content: str
 
-class Message(BaseModel):
-    room_id: str
-    user_id: str
-    content: str
-    sequence_number: int = 0
-    created_at: float = 0.0
-    message_type: str = "text"
+
+# Global instances (initialized later in __main__ or on app startup)
+etcd_client: Optional[EtcdClient] = None
+raft_node_instance: Optional[RaftNode] = None
+raft_rpc_clients: Dict[str, RaftRPCClient] = {}
+
+# Constants from app_config
+NODE_ID = app_config.node_id
+API_HOST = app_config.get_api_host()
+API_PORT = app_config.get_api_port()
+CURRENT_NODE_RPC_ADDRESS = app_config.get_current_node_rpc_address()
+PEER_NODE_IDS = app_config.get_peer_node_ids()
+ALL_RAFT_NODE_RPC_ADDRESSES = app_config.get_all_node_addresses() # This includes current node
+
+# FastAPI app setup
+app = FastAPI(
+    title=f"Chat API Node {NODE_ID}",
+    description="Distributed Chat Application API with Raft Consensus",
+    version="0.1.0",
+)
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Adjust as needed for your frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configure logging (app_config already does basicConfig, this ensures FastAPI also uses it)
+# logging.getLogger().setLevel(app_config.get('log_level', 'INFO').upper())
+# logging.basicConfig(level=app_config.get('log_level', 'INFO').upper(), format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+@app.on_event("startup")
+async def startup_event():
+    global etcd_client, raft_node_instance, raft_rpc_clients
+    
+    # Initialize EtcdClient
+    etcd_endpoints = app_config.get_etcd_endpoints()
+    # Ensure the EtcdClient is initialized with the node's specific addresses for registration
+    etcd_client = EtcdClient(
+        etcd_endpoints=etcd_endpoints,
+        node_id=NODE_ID,
+        api_address=f"http://{API_HOST}:{API_PORT}",
+        rpc_address=f"http://{CURRENT_NODE_RPC_ADDRESS[0]}:{CURRENT_NODE_RPC_ADDRESS[1]}"
+    )
+    logger.info(f"Node {NODE_ID}: Initialized EtcdClient with endpoints: {etcd_endpoints}")
+
+    # Initialize RaftRPCClients for peers
+    for peer_id in PEER_NODE_IDS:
+        # Retrieve RPC address from the comprehensive node addresses map
+        # The tuple is (api_host, api_port, rpc_host, rpc_port)
+        _, _, peer_host, peer_port = app_config.get_all_node_addresses().get(peer_id)
+        raft_rpc_clients[peer_id] = RaftRPCClient(peer_host, peer_port)
+        logger.info(f"Node {NODE_ID}: Initialized RaftRPCClient for peer {peer_id} at {peer_host}:{peer_port}")
+
+    # Initialize RaftNode with correct parameters
+    # Create persistent_state dict for RaftNode initialization
+    persistent_state = {}
+    # We need strings for the API and RPC addresses, not tuples
+    api_endpoint = f"http://{API_HOST}:{API_PORT}"
+    rpc_endpoint = f"http://{CURRENT_NODE_RPC_ADDRESS[0]}:{CURRENT_NODE_RPC_ADDRESS[1]}"
+
+    # Initialize the PersistentSequencer
+    sequencer_instance = PersistentSequencer() # Assuming PersistentSequencer doesn't need args for now
+
+    raft_node_instance = RaftNode(
+        peer_clients=raft_rpc_clients,
+        persistent_state=persistent_state,
+        etcd_client_instance=etcd_client,
+        node_api_address_str=api_endpoint,
+        node_rpc_address_str=rpc_endpoint,
+        sequencer_instance=sequencer_instance # Pass the sequencer instance
+    )
+    logger.info(f"Node {NODE_ID}: Initialized RaftNode.")
+
+    # API endpoint registration is handled during RaftNode initialization
+    # with the node_api_address_str parameter we passed
+    logger.info(f"Node {NODE_ID}: API endpoint {api_endpoint} passed to RaftNode for registration.")
+
+    # Start the Raft RPC server (non-blocking)
+    # This is already run in a separate thread inside the function
+    try:
+        rpc_server = start_rpc_server(raft_node_instance, CURRENT_NODE_RPC_ADDRESS[0], CURRENT_NODE_RPC_ADDRESS[1])
+        logger.info(f"Node {NODE_ID}: RPC server started successfully.")
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Failed to start RPC server: {e}")
+        raise
+    logger.info(f"Node {NODE_ID}: Started Raft RPC server on {CURRENT_NODE_RPC_ADDRESS[0]}:{CURRENT_NODE_RPC_ADDRESS[1]}")
+
+    # Initialize database
+    init_db()
+    logger.info(f"Node {NODE_ID}: Database initialized.")
+
+    # Wait for all RPC servers in the cluster to be ready
+    # This block will be executed by each api_server.py instance.
+    # Each instance will wait for ALL other instances' RPC servers to be ready.
+    await wait_for_all_rpc_servers_ready(ALL_RAFT_NODE_RPC_ADDRESSES)
+
+    # Start Raft election timer after all RPC servers are confirmed ready
+    raft_node_instance.start_election_timer()
+    logger.info(f"Node {NODE_ID}: Raft election timer initiated explicitly after all RPC servers are ready.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info(f"Node {NODE_ID}: Shutting down...")
+    if etcd_client:
+        await etcd_client.unregister_node(NODE_ID)
+        logger.info(f"Node {NODE_ID}: Unregistered from Etcd.")
+    if raft_node_instance:
+        raft_node_instance.stop()
+        logger.info(f"Node {NODE_ID}: RaftNode stopped.")
+
+
+# Helper function to check if a specific RPC server is ready
+async def check_rpc_server_ready(node_id: str, host: str, port: int, max_retries: int = 5, retry_delay_sec: float = 1.0):
+    server_url = f"http://{host}:{port}/health"
+    logger.info(f"Node {NODE_ID}: Checking RPC server readiness for node {node_id} at {server_url}")
+    
+    for i in range(max_retries):
+        try:
+            # Use aiohttp or httpx for async HTTP requests if available
+            # For now, using requests in a synchronous way
+            response = requests.get(server_url, timeout=1.0)
+            if response.status_code == 200:
+                logger.info(f"Node {NODE_ID}: RPC server for node {node_id} is ready at {host}:{port}")
+                return True
+        except Exception as e:
+            logger.warning(f"Node {NODE_ID}: RPC server for node {node_id} not ready at {host}:{port}, retry {i+1}/{max_retries}: {e}")
+        
+        # Wait before retrying
+        await asyncio.sleep(retry_delay_sec)
+    
+    logger.error(f"Node {NODE_ID}: Failed to connect to RPC server for node {node_id} at {host}:{port} after {max_retries} retries")
+    return False
+
+# Helper function to wait for all RPC servers to be ready
+async def wait_for_all_rpc_servers_ready(all_rpc_addresses: Dict[str, Tuple[str, int, str, int]], timeout: int = 60):
+    logger.info(f"Node {NODE_ID}: Waiting for all RPC servers to be ready...")
+    tasks = []
+    for node_id, (api_host, api_port, rpc_host, rpc_port) in all_rpc_addresses.items():
+        if node_id != NODE_ID: # Don't check self
+            tasks.append(asyncio.create_task(check_rpc_server_ready(node_id, rpc_host, rpc_port)))
+
+    
+    if not tasks: # Only one node in config
+        logger.info(f"Node {NODE_ID}: No other RPC servers to wait for (single node configuration).")
+        return
+
+    try:
+        # Use asyncio.wait to wait for all tasks to complete, with a timeout
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+
+        if pending:
+            for task in pending:
+                task.cancel() # Cancel tasks that are still pending
+            logger.warning(f"Node {NODE_ID}: Timed out waiting for {len(pending)} RPC servers to become ready after {timeout} seconds.")
+            # Depending on strictness, you might want to raise an exception here
+            # raise HTTPException(status_code=504, detail="Timeout waiting for all RPC servers to be ready.")
+        else:
+            logger.info(f"Node {NODE_ID}: All {len(done)} peer RPC servers are ready.")
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error waiting for RPC servers: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error during RPC server readiness check.")
+
+async def check_rpc_server_ready(node_id: str, host: str, port: int, retries: int = 5, delay: int = 1):
+    url = f"http://{host}:{port}/health"
+    for i in range(retries):
+        try:
+            response = requests.get(url, timeout=delay) # Use a short timeout for the health check itself
+            response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+            logger.info(f"Node {NODE_ID}: RPC server {node_id} at {host}:{port} is ready.")
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Node {NODE_ID}: RPC server {node_id} at {host}:{port} not ready yet (attempt {i+1}/{retries}): {e}")
+            await asyncio.sleep(delay)
+    logger.error(f"Node {NODE_ID}: RPC server {node_id} at {host}:{port} failed to become ready after {retries} attempts.")
+    return False
+
+# Dependency to ensure request is handled by the leader
+async def redirect_if_not_leader(request: Request):
+    if raft_node_instance is None or not raft_node_instance.is_initialized():
+        logger.warning(f"Node {NODE_ID}: Raft node not initialized. Cannot determine leader status.")
+        raise HTTPException(status_code=503, detail="Raft node not initialized.")
+
+    if not raft_node_instance.state == "LEADER":
+        logger.info(f"Node {NODE_ID}: Current node is a {raft_node_instance.state}. Redirecting to leader.")
+        # Attempt to get leader's API endpoint from Etcd
+        try:
+            leader_api_url = await etcd_client.get_leader_api_endpoint()
+            if leader_api_url:
+                # Construct the full redirect URL, preserving the original path and query parameters
+                # Ensure leader_api_url does not end with a slash if path starts with one, and vice-versa
+                full_redirect_url = f"{leader_api_url.rstrip('/')}{request.url.path}"
+                if request.url.query:
+                    full_redirect_url += f"?{request.url.query}"
+                logger.info(f"Node {NODE_ID}: Redirecting to leader at {full_redirect_url}")
+                raise HTTPException(status_code=307, detail=full_redirect_url) # Use 307 Temporary Redirect
+            else:
+                logger.error(f"Node {NODE_ID}: Leader API endpoint not found in Etcd for redirection.")
+                raise HTTPException(status_code=503, detail="Leader API endpoint not found.")
+        except HTTPException:
+            # Re-raise HTTPException to propagate redirects or other HTTP errors
+            raise
+        except Exception as e:
+            logger.error(f"Node {NODE_ID}: Error fetching leader info for redirection: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Error redirecting to leader.")
+    return True # Current node is leader, proceed
+
+# --- FastAPI Routes ---
+@app.get("/routes")
+async def get_all_routes(request: Request):
+    return {"routes": [route.path for route in request.app.routes]}
+
+# Helper to get leader's API address for redirection
+def get_leader_api_redirect_url(endpoint: str) -> Optional[str]:
+    if raft_node_instance.leader_id and raft_node_instance.leader_id != NODE_ID:
+        # The tuple is (api_host, api_port, rpc_host, rpc_port)
+        leader_api_host, leader_api_port, _, _ = app_config.get_all_node_addresses().get(raft_node_instance.leader_id)
+        if leader_api_host and leader_api_port:
+            url = f"http://{leader_api_host}:{leader_api_port}{endpoint}"
+            logger.info(f"Node {NODE_ID}: Not leader. Leader is {raft_node_instance.leader_id}. Redirecting to {url}")
+            return url
+        else:
+            logger.warning(f"Node {NODE_ID}: Not leader. Leader is {raft_node_instance.leader_id}, but API address not found in config.")
+    return None
 
 @app.post("/send_message")
-async def send_message(request: Request, message: Message):
-    try:
-        # If this node is the leader, record the entry
-        if sequencer.state == 'leader':
-            # Generate a unique ID for the message
-            message_id = str(uuid.uuid4())
-            # Record the entry in the log
-            result = sequencer.record_entry(
-                room_id=message.room_id,
-                user_id=message.user_id,
-                content=message.content,
-                msg_type="text"
-            )
-            sequence_number = result['sequence_number']
-            # Create domain message
-            msg = MessageModel(
-                id=result['id'],
-                room_id=message.room_id,
-                user_id=message.user_id,
-                sequence_number=sequence_number,
-                content=message.content,
-                message_type="text",
-                created_at=time.time()
-            )
-            # Store message in database
-            db = next(get_db())
-            db.add(msg)
-            db.commit()
-            return JSONResponse(content={"message_id": str(msg.id), "sequence": sequence_number}, status_code=200)
+async def send_message(message: MessageCreate, request: Request):
+    entry_data = {
+        "type": "SEND_MESSAGE",
+        "data": {
+            "id": str(uuid.uuid4()),
+            "room_id": message.room_id,
+            "user_id": message.user_id,
+            "content": message.content,
+            "message_type": "chat_message",
+            "timestamp": time.time()
+        }
+    }
+
+    success, redirect_reason = raft_node_instance.propose_command(command=entry_data)
+
+    if success:
+        return JSONResponse(content=entry_data, status_code=200)
+    elif redirect_reason == "NOT_LEADER":
+        leader_redirect_url = get_leader_api_redirect_url(request.url.path)
+        if leader_redirect_url:
+            logger.info(f"Node {NODE_ID}: Not leader, redirecting to {leader_redirect_url}")
+            raise HTTPException(status_code=307, detail=f"Redirect to leader at {leader_redirect_url}",
+                                headers={"Location": leader_redirect_url})
         else:
-            # If not the leader, redirect to the leader
-            leader_host, leader_port = sequencer.node_addresses[sequencer.leader_id]
-            leader_url = f"http://{leader_host}:{leader_port}/send_message"
-            return RedirectResponse(url=leader_url, status_code=307)
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+            logger.error(f"Node {NODE_ID}: Not leader, but no leader API address found for redirection.")
+            raise HTTPException(status_code=503, detail="Not leader and leader address unknown.")
+    else:
+        logger.error(f"Node {NODE_ID}: Failed to propose command with unknown reason: {redirect_reason}")
+        raise HTTPException(status_code=500, detail="Failed to process command")
 
-@app.get("/messages/{room_id}")
-async def get_messages(room_id: str, db: Session = Depends(get_db)):
+@app.post("/messages", response_model=MessageResponse)
+async def create_message(
+    message: MessageCreate,
+    _ = Depends(redirect_if_not_leader), # Ensure request goes to leader
+    db: Session = Depends(get_db)
+):
     try:
-        room_uuid = room_id
-        messages = db.query(MessageModel).filter(MessageModel.room_id == room_uuid).order_by(MessageModel.sequence_number).all()
-        return {"messages": [{
-            "id": str(msg.id),
-            "room_id": str(msg.room_id),
-            "user_id": str(msg.user_id),
-            "content": msg.content,
-            "sequence_number": msg.sequence_number,
-            "created_at": msg.created_at
-        } for msg in messages]}
-    except Exception as e:
-        logging.error(f"Error retrieving messages: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve messages")
-
-@app.post("/rooms")
-async def create_room(room: RoomCreate, db: Session = Depends(get_db)):
-    room_id = str(uuid.uuid4())
-    room_model = RoomModel(
-        id=room_id,
-        name=room.name,
-        created_at=time.time()
-    )
-    db.add(room_model)
-    db.commit()
-    return {"room_id": room_id}
-
-@app.post('/private-chats')
-async def create_private_chat(user1: str, user2: str, db: Session = Depends(get_db)):
-    """Create a private chat between two users"""
-    # Create private room without a name
-    room_id = str(uuid.uuid4())
-    room = RoomModel(id=room_id, is_private=True, created_at=time.time())
-    db.add(room)
-    
-    # Add participants
-    db.add(RoomParticipant(room_id=room_id, user_id=user1))
-    db.add(RoomParticipant(room_id=room_id, user_id=user2))
-    db.commit()
-    return {'room_id': room_id}
-
-@app.get("/rooms")
-async def list_rooms(db: Session = Depends(get_db)):
-    rooms = db.query(RoomModel).all()
-    return [{"id": str(room.id), "name": room.name} for room in rooms]
-
-@app.post("/messages")
-async def create_message(message: MessageCreate):
-    """Create a new message in the specified room"""
-    try:
-        # If this node is the leader, record the entry
-        if sequencer.state == 'leader':
-            result = sequencer.record_entry(
-                room_id=message.room_id,
-                user_id=message.user_id,
-                content=message.content,
-                msg_type="text"
-            )
-            
-            db = next(get_db())
-            try:
-                # Create and save the message
-                msg = MessageModel(
-                    id=result['id'],
-                    room_id=message.room_id,
-                    user_id=message.user_id,
-                    content=message.content,
-                    sequence_number=result['sequence_number'],
-                    message_type="text",
-                    created_at=time.time()
-                )
-                db.add(msg)
-                db.commit()
-                return {"status": "success", "message_id": result['id']}
-            except Exception as e:
-                db.rollback()
-                logging.error(f"Database error: {e}")
-                raise HTTPException(status_code=500, detail="Failed to save message")
+        entry_data = {
+            "id": str(uuid.uuid4()), # Message ID generated by API server
+            "room_id": message.room_id,
+            "user_id": message.user_id,
+            "content": message.content,
+            "message_type": "text", # Default, or add to MessageCreate if varied
+            "timestamp": time.time()
+        }
+        # raft_node_instance.record_entry is RaftNode.record_entry
+        # result = raft_node_instance.record_entry(entry_data)
+        result = raft_node_instance.handle_client_command(command=entry_data)
+        if result and result.get('success'):
+            logger.info(f"Message entry {entry_data['id']} accepted by Raft leader {NODE_ID}.")
+            return {"status": "success", "message_id": entry_data['id'], "detail": "Message accepted by leader, pending replication."}
         else:
-            # If not the leader, redirect to the leader
-            leader_host, leader_port = sequencer.node_addresses[sequencer.leader_id]
-            leader_url = f"http://{leader_host}:{leader_port}/messages"
-            return RedirectResponse(url=leader_url, status_code=307)
+            err_msg = result.get('message', 'Unknown error') if result else 'No response from Raft'
+            logger.error(f"Raft leader {NODE_ID} failed to accept message entry: {err_msg}")
+            raise HTTPException(status_code=500, detail=f"Raft leader failed to accept message: {err_msg}")
     except Exception as e:
-        logging.error(f"Error creating message: {e}")
+        logger.error(f"Error in /messages on leader {NODE_ID}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/messages")
-async def get_messages():
-    """Endpoint to get all messages"""
-    try:
-        # In a real implementation, fetch from shared storage
-        return {"messages": messages_store["global"]}
-    except Exception as e:
-        logging.error(f"Error retrieving messages: {e}")
-        raise HTTPException(status_code=500, detail="Message retrieval failed")
+@app.post("/rooms", response_model=RoomResponse)
+async def create_room(
+    room_create: RoomCreate,
+    _ = Depends(redirect_if_not_leader), # Ensure request goes to leader
+    db: Session = Depends(get_db)
+):
+    if not raft_node_instance.state == "LEADER":
+        # This case should ideally be handled by the Depends(redirect_if_not_leader) but as a fallback
+        redirect_url = get_leader_api_redirect_url("/rooms")
+        if redirect_url:
+            return RedirectResponse(url=redirect_url, status_code=307)
+        raise HTTPException(status_code=503, detail="Not leader and leader API address unknown.")
 
-@app.get("/raft_state")
-async def get_raft_state():
-    """Endpoint to get Raft state information"""
     try:
-        # Placeholder - replace with actual Raft state
-        return {
-            "state": "leader",
-            "term": 1,
-            "leader_id": "node1",
-            "nodes": ["node1", "node2", "node3"]
+        # The command to be replicated by Raft
+        command_data = {
+            "action": "create_room",
+            "name": room_create.name,
+            "created_at": time.time() # Add created_at timestamp
         }
-    except Exception as e:
-        logging.error(f"Error getting Raft state: {e}")
-        raise HTTPException(status_code=500, detail="Raft state unavailable")
+        logger.info(f"Node {NODE_ID}: Proposing room creation command to Raft: {command_data}")
+        
+        # Propose the command to the Raft cluster
+        result = raft_node_instance.handle_client_command(command=command_data)
 
+        if result and result.get('success'):
+            room_id = result.get('room_id') # Assuming Raft returns the ID of the created room
+            logger.info(f"Node {NODE_ID}: Room '{room_create.name}' created with ID {room_id} via Raft.")
+            return RoomResponse(status="success", room_id=room_id, name=room_create.name, created_at=command_data['created_at'])
+        else:
+            err_msg = result.get('message', 'Unknown error') if result else 'No response from Raft'
+            logger.error(f"Node {NODE_ID}: Raft failed to create room '{room_create.name}': {err_msg}")
+            raise HTTPException(status_code=500, detail=f"Failed to create room: {err_msg}")
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error creating room '{room_create.name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "node_id": NODE_ID, "raft_state": raft_node_instance.state if raft_node_instance else "uninitialized"}
+
+@app.get("/raft_state", response_model=RaftState)
+async def get_raft_state():
+    if not raft_node_instance:
+        raise HTTPException(status_code=503, detail="Raft node not initialized.")
+    
+    return RaftState(
+        node_id=raft_node_instance.node_id,
+        current_term=raft_node_instance.current_term,
+        voted_for=raft_node_instance.voted_for,
+        commit_index=raft_node_instance.commit_index,
+        last_applied=raft_node_instance.last_applied,
+        role=raft_node_instance.state,
+        leader_id=raft_node_instance.leader_id,
+        log_size=len(raft_node_instance.log)
+    )
+
+@app.get("/nodes", response_model=List[NodeInfo])
+async def get_cluster_nodes():
+    nodes = []
+    # Include current node
+    nodes.append(NodeInfo(
+        id=NODE_ID,
+        api_address=f"http://{API_HOST}:{API_PORT}",
+        rpc_address=f"http://{CURRENT_NODE_RPC_ADDRESS[0]}:{CURRENT_NODE_RPC_ADDRESS[1]}",
+        role=raft_node_instance.state if raft_node_instance else "unknown",
+        term=raft_node_instance.current_term if raft_node_instance else None
+    ))
+    # Include peers
+    for peer_id in PEER_NODE_IDS:
+        peer_host, peer_port = app_config.get_node_address(peer_id)
+        # For API address, we assume a convention or fetch from Etcd if available
+        # For simplicity, let's assume API port is same as RPC port for now, or fetch from Etcd
+        # Here, we'll just use the RPC address as a placeholder for peer info
+        nodes.append(NodeInfo(
+            id=peer_id,
+            api_address="N/A", # Or fetch from Etcd if registered
+            rpc_address=f"http://{peer_host}:{peer_port}",
+            role="unknown", # Can't know peer's role directly from here without another RPC
+            term=None
+        ))
+    return nodes
+
+@app.get("/leader_api_address")
+async def get_leader_api_address():
+    if not etcd_client:
+        raise HTTPException(status_code=503, detail="Etcd client not available.")
+    try:
+        leader_api_url = await etcd_client.get_leader_api_endpoint()
+        if leader_api_url:
+            return {"leader_api_address": leader_api_url}
+        else:
+            raise HTTPException(status_code=404, detail="Leader API address not found.")
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error fetching leader API address from etcd: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error fetching leader API address from etcd.")
+
+@app.get("/leader_info")
+async def get_leader_information():
+    logger.info(f"Node {NODE_ID}: Received request for /leader_info")
+    if not etcd_client:
+        logger.error(f"Node {NODE_ID}: Etcd client not initialized. Cannot fetch leader info.")
+        raise HTTPException(status_code=503, detail="Etcd client not available.")
+    try:
+        leader_info = etcd_client.get_leader_info()
+        if leader_info:
+            logger.info(f"Node {NODE_ID}: Successfully fetched leader info from etcd: {leader_info}")
+            return leader_info
+        else:
+            logger.warning(f"Node {NODE_ID}: No leader information currently available in etcd.")
+            raise HTTPException(status_code=404, detail="Leader information not found.")
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error fetching leader information from etcd: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error fetching leader information from etcd.")
+
+# --- Main Execution ---
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+    logger.info(f"Starting Uvicorn API server for node {NODE_ID} on {API_HOST}:{API_PORT}")
+    uvicorn.run(app, host=API_HOST, port=API_PORT, log_config=None) # Pass log_config=None if already configured

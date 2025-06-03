@@ -48,8 +48,34 @@ class WAL:
             os.fsync(self.file.fileno())
 
     def read_all(self) -> List[Entry]:
-        # Return empty list if no entries
-        return []
+        self.close() # Close the file before reopening in read mode
+        self.file = open(self.file_path, 'rb') # Open in read binary mode
+        reader = io.BufferedReader(self.file)
+        entries = []
+        while True:
+            try:
+                length_bytes = reader.read(4)
+                if not length_bytes:
+                    break # End of file
+                length = int.from_bytes(length_bytes, 'little')
+                data = reader.read(length).decode('utf-8')
+                entry_data = json.loads(data)
+                entries.append(Entry(
+                    id=uuid.UUID(entry_data['id']),
+                    room_id=uuid.UUID(entry_data['room_id']),
+                    user_id=uuid.UUID(entry_data['user_id']),
+                    sequence_number=entry_data['sequence_number'],
+                    content=entry_data['content'],
+                    message_type=entry_data['message_type'],
+                    created_at=datetime.fromisoformat(entry_data['created_at'])
+                ))
+            except Exception as e:
+                # Log error or handle corrupted entry
+                print(f"Error reading WAL entry: {e}")
+                break
+        self.close() # Close after reading
+        self.open() # Reopen in append mode for future writes
+        return entries
 
     def close(self) -> None:
         if self.file:

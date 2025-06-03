@@ -1,0 +1,168 @@
+{
+  "current_term": 21,
+  "voted_for": "node1",
+  "log": [
+    {
+      "index": 0,
+      "term": 2,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 1,
+      "term": 3,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 2,
+      "term": 4,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 3,
+      "term": 5,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 4,
+      "term": 6,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 5,
+      "term": 7,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 6,
+      "term": 8,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 7,
+      "term": 9,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 8,
+      "term": 10,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 9,
+      "term": 11,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 10,
+      "term": 12,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 11,
+      "term": 13,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 12,
+      "term": 14,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 13,
+      "term": 15,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 14,
+      "term": 16,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 15,
+      "term": 17,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 16,
+      "term": 18,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 17,
+      "term": 19,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 18,
+      "term": 20,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    },
+    {
+      "index": 19,
+      "term": 21,
+      "entry": {
+        "type": "no-op",
+        "data": null
+      }
+    }
+  ],
+  "commit_index": 19,
+  "last_applied": 19
+}

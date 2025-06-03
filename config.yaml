@@ -1,0 +1,63 @@
+# Distributed Chat Application Configuration Example
+# Copy this file to config.yaml and modify as needed.
+
+# General application settings
+log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+# API Server settings
+# The NODE_ID environment variable will determine which node's specific API port to use if defined below.
+# API_PORT environment variable can override the port for the current node.
+api_server:
+  default_host: "127.0.0.1"
+  # Per-node API port configuration. Values here are defaults if API_PORT is not set.
+  ports:
+    node1: 9001
+    node2: 9002
+    node3: 9003
+    # Add more nodes as needed
+
+# Raft Consensus Algorithm settings
+raft:
+  # Election timeouts in milliseconds
+  election_timeout_min_ms: 350
+  election_timeout_max_ms: 700
+  # Heartbeat interval in milliseconds (should be less than election_timeout_min_ms)
+  heartbeat_interval_ms: 150
+  # Snapshot settings
+  snapshot_interval_s: 120  # Interval for taking snapshots, in seconds
+  snapshot_path_template: "raft_snapshots/snapshot_{node_id}.json" # Path template for snapshots. Ensure directory exists.
+
+  # List of all nodes in the Raft cluster.
+  # The NODE_ID environment variable identifies the current node from this list.
+  # RPC_PORT environment variable can override the rpc_port for the current node.
+  nodes:
+    - node_id: "node1"
+      rpc_host: "127.0.0.1"
+      rpc_port: 8001
+    - node_id: "node2"
+      rpc_host: "127.0.0.1"
+      rpc_port: 8002
+    - node_id: "node3"
+      rpc_host: "127.0.0.1"
+      rpc_port: 8003
+    # Add more nodes as needed, ensuring node_id is unique.
+
+# Database settings (for future use with Durable State Machine Storage)
+# database:
+#   type: "sqlite"  # e.g., "sqlite", "postgresql"
+#   # Connection string or parameters specific to the database type
+#   connection_string: "sqlite:///./chat_data_{node_id}.db"
+#   # For PostgreSQL, might look like:
+#   # host: "localhost"
+#   # port: 5432
+#   # user: "chat_user"
+#   # password: "secure_password"
+#   # dbname: "chat_db"
+
+# WebSocket settings (for future use with Real-time Client Communication)
+# websocket_server:
+#   default_host: "127.0.0.1"
+#   ports:
+#     node1: 9091
+#     node2: 9092
+#     node3: 9093
