@@ -181,9 +181,11 @@ class EtcdClient:
             logger.error(f"Failed to publish leader info to etcd: {e}")
             return False
 
-    def clear_leader_info(self):
+    def clear_leader_info(self, previous_leader_id=None):
         """
         Clears the leader's API address from etcd.
+        Args:
+            previous_leader_id: Optional ID of the previous leader (not used in this implementation but accepted for compatibility)
         Returns:
             bool: True if successful, False otherwise.
         """

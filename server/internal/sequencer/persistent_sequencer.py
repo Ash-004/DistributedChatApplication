@@ -6,7 +6,7 @@ import datetime
 from .wal import WAL, Entry
 from .raft import RaftNode, NotLeaderException
 from ..storage.database import get_db, SessionLocal
-from ..storage.models import Message
+from ..storage.models import Message, Room
 
 class PersistentSequencer:
     def __init__(self, wal_path: str, db_session_factory: SessionLocal):
@@ -25,34 +25,51 @@ class PersistentSequencer:
             if room_id not in self.sequences or entry.sequence_number > self.sequences[room_id]:
                 self.sequences[room_id] = entry.sequence_number
 
-    def get_next_sequence(self, room_id: uuid.UUID) -> int:
+    def get_next_sequence(self, room_id: str) -> int:
         with self.lock:
             current_seq = self.sequences.get(room_id, 0) + 1
             self.sequences[room_id] = current_seq
             return current_seq
 
-    def record_entry(self, entry_data: dict) -> dict:
+    def record_entry(self, entry_data: dict, absolute_index: int = None) -> dict:
         # This method is called by RaftNode.apply_entries
         # It should directly apply the entry to the database
         db = self.db_session_factory()
         try:
-            # Check for idempotency
-            existing_message = db.query(Message).filter(Message.id == uuid.UUID(entry_data['id'])).first()
+            # Check for idempotency - FIX: Use string ID directly instead of converting to UUID
+            existing_message = db.query(Message).filter(Message.id == entry_data['id']).first()
             if existing_message:
                 print(f"Message {entry_data['id']} already exists, skipping.")
                 return {'status': 'skipped'}
 
-            # Assign sequence number
-            sequence_number = self.get_next_sequence(uuid.UUID(entry_data['room_id']))
+            # For CREATE_ROOM message type, create the room first
+            if entry_data['msg_type'] == 'CREATE_ROOM':
+                # Check if room already exists
+                existing_room = db.query(Room).filter(Room.id == entry_data['room_id']).first()
+                if not existing_room:
+                    # Create the room
+                    room = Room(
+                        id=entry_data['room_id'],
+                        name=entry_data['content'],
+                        is_private=False,
+                        created_at=entry_data['timestamp']
+                    )
+                    db.add(room)
+                    # Flush to ensure the room is created before the message
+                    db.flush()
+                    print(f"Created room {entry_data['room_id']} with name {entry_data['content']}")
+
+            # Assign sequence number - FIX: Use string room_id directly
+            sequence_number = self.get_next_sequence(entry_data['room_id'])
 
             message = Message(
-                id=uuid.UUID(entry_data['id']),
-                room_id=uuid.UUID(entry_data['room_id']),
-                user_id=uuid.UUID(entry_data['user_id']),
+                id=entry_data['id'],  # FIX: Use string ID directly
+                room_id=entry_data['room_id'],  # FIX: Use string room_id directly
+                user_id=entry_data['user_id'],  # FIX: Use string user_id directly
                 sequence_number=sequence_number,
                 content=entry_data['content'] or '', # Ensure content is not None
                 message_type=entry_data['msg_type'] or '', # Ensure message_type is not None
-                created_at=datetime.datetime.fromtimestamp(entry_data['timestamp'])
+                created_at=entry_data['timestamp']  # Use the timestamp directly as a float
             )
             db.add(message)
             db.commit()
@@ -79,14 +96,51 @@ class PersistentSequencer:
 
 class DistributedSequencer(RaftNode):
     def __init__(self, node_id: str, peers: list, node_address: str, rpc_port: int, sequencer: PersistentSequencer):
-        super().__init__(node_id, peers, node_address, rpc_port)
+        # Create required parameters for RaftNode initialization
+        from server.internal.discovery.etcd_client import EtcdClient
+        from server.internal.sequencer.raft_rpc_client import RaftRPCClient
+        from server.config import app_config
+        
+        # Initialize peer clients dictionary
+        peer_clients = {}
+        for peer_id in peers:
+            _, _, peer_host, peer_port = app_config.get_all_node_addresses().get(peer_id)
+            peer_clients[peer_id] = RaftRPCClient(peer_host, peer_port)
+        
+        # Create persistent state dictionary
+        persistent_state = {}
+        
+        # Format node API address string
+        node_api_address_str = node_address
+        
+        # Format node RPC address string
+        node_rpc_address_str = f"http://{app_config.get_current_node_rpc_host()}:{rpc_port}"
+        
+        # Get etcd client instance
+        etcd_client_instance = EtcdClient(
+            etcd_endpoints=app_config.get_etcd_endpoints(),
+            node_id=node_id,
+            api_address=node_address,
+            rpc_address=node_rpc_address_str
+        )
+        
+        # Call parent class constructor with all required parameters
+        super().__init__(
+            peer_clients=peer_clients,
+            persistent_state=persistent_state,
+            etcd_client_instance=etcd_client_instance,
+            node_api_address_str=node_api_address_str,
+            node_rpc_address_str=node_rpc_address_str,
+            sequencer_instance=sequencer
+        )
+        
         self.sequencer = sequencer
         print(f"Initialized DistributedSequencer on port {rpc_port}")
         
 
 
     def record_entry(self, room_id, user_id, content, msg_type):
-        if self.state != 'leader':
+        if self.state != 'LEADER':
             raise Exception("Not leader")
             
         entry_data = {
@@ -102,9 +156,9 @@ class DistributedSequencer(RaftNode):
         # This will add the entry to the Raft log and replicate it
         # The actual sequence number will be assigned when applied to the WAL
         try:
-            self.append_entries(self.current_term, self.node_id, len(self.log) - 1, 
-                                self.log[-1]['term'] if self.log else 0, 
-                                [{'entry': entry_data, 'term': self.current_term}], self.commit_index)
+            self.append_entries(leader_id=self.node_id, term=self.current_term, prev_log_index=len(self.log) - 1, 
+                                prev_log_term=self.log[-1]['term'] if self.log else 0, 
+                                entries=[{'entry': entry_data, 'term': self.current_term}], leader_commit=self.commit_index)
             return {'id': entry_data['id'], 'status': 'replicated'}
         except NotLeaderException as e:
             return {'error': 'Not leader', 'leader_address': e.leader_addr}

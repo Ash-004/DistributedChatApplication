@@ -26,15 +26,15 @@ class RaftNode:
         def timer():
             while True:
                 time.sleep(0.1)
-                if self.state != 'leader' and time.time() - self.last_heartbeat > self.election_timeout:
+                if self.state != 'LEADER' and time.time() - self.last_heartbeat > self.election_timeout:
                     self.start_election()
         threading.Thread(target=timer, daemon=True).start()
     
     def start_election(self):
-        self.state = 'candidate'
         self.current_term += 1
         self.voted_for = self.node_id
-        votes = 1
+        self.state = 'candidate'
+        votes = 1  # Vote for self
         
         for peer in self.peers:
             try:
@@ -45,18 +45,26 @@ class RaftNode:
                         'candidate_id': self.node_id,
                         'last_log_index': len(self.log) - 1,
                         'last_log_term': self.log[-1]['term'] if self.log else 0
-                    },
-                    timeout=0.5
+                    }
                 )
-                if response.json().get('vote_granted'):
-                    votes += 1
-            except:
-                pass
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('vote_granted'):
+                        votes += 1
+            except Exception as e:
+                print(f"Error requesting vote from {peer}: {e}")
         
-        if votes > len(self.peers) // 2:
+        if votes > len(self.peers) / 2:
             self.become_leader()
         else:
             self.state = 'follower'
+            self.voted_for = None
+            
+    def run(self):
+        while True:
+            if self.state != 'LEADER' and time.time() - self.last_heartbeat > self.election_timeout:
+                self.start_election()
+            time.sleep(0.1)
     
     def persist_state(self):
         state = {
@@ -83,12 +91,12 @@ class RaftNode:
             self.commit_index = 0
             
     def become_leader(self):
-        self.state = 'leader'
+        self.state = 'LEADER'
         self.next_index = {peer: len(self.log) for peer in self.peers}
         self.match_index = {peer: 0 for peer in self.peers}
         
         def send_heartbeats():
-            while self.state == 'leader':
+            while self.state == 'LEADER':
                 for peer in self.peers:
                     try:
                         requests.post(
@@ -156,20 +164,62 @@ class RaftNode:
         # Append new entries
         if entries:
             self.log = self.log[:prev_log_index+1] + entries
+            self.persist_state() # Persist after log modification
             
         # Update commit index
         if leader_commit > self.commit_index:
             self.commit_index = min(leader_commit, len(self.log) - 1)
+            # Apply committed entries to state machine (simplified)
+            while self.last_applied < self.commit_index:
+                self.last_applied += 1
+                # In a real system, you would apply self.log[self.last_applied] to your state machine
+                print(f"Node {self.node_id}: Applying log entry {self.last_applied}: {self.log[self.last_applied]}")
             
         return {'success': True, 'term': self.current_term}
+
+    def handle_client_command(self, command):
+        if self.state != 'LEADER':
+            # Redirect client to leader or return error
+            # For simplicity, returning an error
+            return {'success': False, 'message': 'Not a leader'}
+
+        # Append command to log as a new entry
+        entry = {'term': self.current_term, 'command': command}
+        self.log.append(entry)
+        self.persist_state() # Persist log change
+        current_log_index = len(self.log) -1
+
+        # Replicate to peers (simplified, actual replication is more complex)
+        # This is a placeholder for actual replication logic which would involve
+        # sending AppendEntries RPCs to followers and waiting for majority confirmation.
+        # For now, we assume immediate replication for simplicity of this example.
+        # In a real implementation, this would be asynchronous and handle retries, etc.
         
-        self.last_heartbeat = time.time()
-        self.state = 'follower'
-        self.current_term = term
+        # Simulate replication and commitment
+        # In a real system, commit_index would be advanced based on responses from followers
+        # For now, let's assume the command is committed if it's appended by the leader.
+        # This is a major simplification.
+        if self.commit_index < current_log_index:
+             self.commit_index = current_log_index
+             # Apply to state machine
+             while self.last_applied < self.commit_index:
+                self.last_applied += 1
+                # print(f"Node {self.node_id}: Applying log entry {self.last_applied} from client command: {self.log[self.last_applied]}")
+                # Simulate applying to a state machine and getting a result (e.g., new room_id)
+                if command['action'] == 'create_room':
+                    # This is where you'd interact with your actual data store/sequencer logic
+                    # For now, let's just return a dummy room_id based on log index
+                    return {'success': True, 'room_id': f"room_{self.last_applied}", 'message': 'Command processed and committed'}
+
+        return {'success': True, 'message': 'Command received by leader and logged', 'log_index': len(self.log) -1}
         
-        # Log replication logic would go here
+        # self.last_heartbeat = time.time()
+        # self.state = 'follower'
+        # self.current_term = term
         
-        if leader_commit > self.commit_index:
-            self.commit_index = min(leader_commit, len(self.log) - 1)
+        # # Log replication logic would go here
         
-        return {'success': True, 'term': self.current_term}
+        # if leader_commit > self.commit_index:
+        #     self.commit_index = min(leader_commit, len(self.log) - 1)
+        
+        # return {'success': True, 'term': self.current_term}

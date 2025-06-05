@@ -17,11 +17,17 @@ import asyncio # Added to fix NameError in periodic_save_raft_state
 import requests # Added for health checks
 
 # Cascade: Assuming these imports are still correct relative to the new structure
-from server.internal.sequencer.raft import RaftNode, PersistentSequencer # Added PersistentSequencer, changed DistributedSequencer to RaftNode
-from server.internal.sequencer.raft_rpc import start_rpc_server, RaftRPCClient
-from server.internal.sequencer import raft # RaftNode is in here
-from server.internal.storage.database import init_db, get_db
+# Change this import
+# from server.internal.sequencer.raft_node import RaftNode
+
+# To this import
+from server.internal.sequencer.raft import RaftNode # Corrected import
+from server.internal.sequencer.raft_rpc_client import RaftRPCClient
+from server.internal.sequencer.raft_rpc import start_rpc_server
+# from server.internal.sequencer import raft # Commenting out or removing if raft.py is not a package or not needed directly
+from server.internal.storage.database import init_db, get_db, SessionLocal
 from server.internal.storage.models import Room as RoomModel, Message as MessageModel, RoomParticipant
+from server.internal.sequencer.persistent_sequencer import PersistentSequencer, DistributedSequencer
 
 from server.config import app_config # Import the global AppConfig instance
 from server.internal.discovery.etcd_client import EtcdClient # Import EtcdClient
@@ -112,11 +118,43 @@ async def startup_event():
     # Initialize EtcdClient
     etcd_endpoints = app_config.get_etcd_endpoints()
     # Ensure the EtcdClient is initialized with the node's specific addresses for registration
+    # Check if CURRENT_NODE_RPC_ADDRESS is available
+    rpc_address = None
+    if CURRENT_NODE_RPC_ADDRESS is not None:
+        rpc_address = f"http://{CURRENT_NODE_RPC_ADDRESS[0]}:{CURRENT_NODE_RPC_ADDRESS[1]}"
+    else:
+        # Fallback to using the RPC_HOST and RPC_PORT environment variables or configuration
+        rpc_host = os.getenv('RPC_HOST', '127.0.0.1')
+        rpc_port = os.getenv('RPC_PORT')
+        
+        # If RPC_PORT is not set in environment, try to get from the config based on NODE_ID
+        if rpc_port is None:
+            for node in app_config._raw_config.get('raft', {}).get('nodes', []):
+                if node.get('node_id') == NODE_ID:
+                    rpc_host = node.get('rpc_host', rpc_host)
+                    rpc_port = node.get('rpc_port')
+                    logger.info(f"Found RPC configuration for node {NODE_ID}: host={rpc_host}, port={rpc_port}")
+                    break
+        
+        # If we still don't have a port, use a default based on the node ID
+        if rpc_port is None:
+            # Default RPC ports: node1=8004, node2=8005, node3=8006
+            default_ports = {"node1": 8004, "node2": 8005, "node3": 8006}
+            rpc_port = default_ports.get(NODE_ID)
+            logger.warning(f"No RPC port configured for {NODE_ID}, using default: {rpc_port}")
+        
+        if rpc_port is not None:
+            rpc_address = f"http://{rpc_host}:{rpc_port}"
+            logger.info(f"Using RPC address: {rpc_address}")
+        else:
+            logger.error(f"Node {NODE_ID}: Could not determine RPC address. Please set RPC_HOST and RPC_PORT environment variables or configure them in raft_config.yaml.")
+            raise ValueError("RPC address not configured")
+    
     etcd_client = EtcdClient(
         etcd_endpoints=etcd_endpoints,
         node_id=NODE_ID,
         api_address=f"http://{API_HOST}:{API_PORT}",
-        rpc_address=f"http://{CURRENT_NODE_RPC_ADDRESS[0]}:{CURRENT_NODE_RPC_ADDRESS[1]}"
+        rpc_address=rpc_address
     )
     logger.info(f"Node {NODE_ID}: Initialized EtcdClient with endpoints: {etcd_endpoints}")
 
@@ -136,17 +174,21 @@ async def startup_event():
     rpc_endpoint = f"http://{CURRENT_NODE_RPC_ADDRESS[0]}:{CURRENT_NODE_RPC_ADDRESS[1]}"
 
     # Initialize the PersistentSequencer
-    sequencer_instance = PersistentSequencer() # Assuming PersistentSequencer doesn't need args for now
-
-    raft_node_instance = RaftNode(
-        peer_clients=raft_rpc_clients,
-        persistent_state=persistent_state,
-        etcd_client_instance=etcd_client,
-        node_api_address_str=api_endpoint,
-        node_rpc_address_str=rpc_endpoint,
-        sequencer_instance=sequencer_instance # Pass the sequencer instance
+    # PersistentSequencer needs a WAL path and db_session_factory
+    wal_path = app_config.get_raft_config('wal_path', 'raft_wal.log')
+    sequencer_instance = PersistentSequencer(wal_path=wal_path, db_session_factory=SessionLocal)
+    
+    # Initialize DistributedSequencer with the correct parameters
+    raft_node_instance = DistributedSequencer(
+        node_id=NODE_ID,
+        peers=PEER_NODE_IDS,
+        node_address=api_endpoint,
+        rpc_port=CURRENT_NODE_RPC_ADDRESS[1],
+        sequencer=sequencer_instance
     )
     logger.info(f"Node {NODE_ID}: Initialized RaftNode.")
+    logger.info(f"Node {NODE_ID}: Type of raft_node_instance: {type(raft_node_instance)}")
+    logger.info(f"Node {NODE_ID}: Attributes of raft_node_instance: {dir(raft_node_instance)}")
 
     # API endpoint registration is handled during RaftNode initialization
     # with the node_api_address_str parameter we passed
@@ -253,7 +295,7 @@ async def check_rpc_server_ready(node_id: str, host: str, port: int, retries: in
 
 # Dependency to ensure request is handled by the leader
 async def redirect_if_not_leader(request: Request):
-    if raft_node_instance is None or not raft_node_instance.is_initialized():
+    if raft_node_instance is None:
         logger.warning(f"Node {NODE_ID}: Raft node not initialized. Cannot determine leader status.")
         raise HTTPException(status_code=503, detail="Raft node not initialized.")
 
@@ -261,7 +303,7 @@ async def redirect_if_not_leader(request: Request):
         logger.info(f"Node {NODE_ID}: Current node is a {raft_node_instance.state}. Redirecting to leader.")
         # Attempt to get leader's API endpoint from Etcd
         try:
-            leader_api_url = await etcd_client.get_leader_api_endpoint()
+            leader_api_url = etcd_client.get_leader_api_endpoint() # Removed await
             if leader_api_url:
                 # Construct the full redirect URL, preserving the original path and query parameters
                 # Ensure leader_api_url does not end with a slash if path starts with one, and vice-versa
@@ -300,7 +342,7 @@ def get_leader_api_redirect_url(endpoint: str) -> Optional[str]:
     return None
 
 @app.post("/send_message")
-async def send_message(message: MessageCreate, request: Request):
+async def send_message(message: MessageCreate, _ = Depends(redirect_if_not_leader)):
     entry_data = {
         "type": "SEND_MESSAGE",
         "data": {
@@ -313,22 +355,22 @@ async def send_message(message: MessageCreate, request: Request):
         }
     }
 
-    success, redirect_reason = raft_node_instance.propose_command(command=entry_data)
+    # Since redirect_if_not_leader handles redirection, we are on the leader here.
+    result = raft_node_instance.record_entry(
+        room_id=message.room_id,
+        user_id=message.user_id,
+        content=message.content,
+        msg_type="chat_message"
+    )
 
-    if success:
-        return JSONResponse(content=entry_data, status_code=200)
-    elif redirect_reason == "NOT_LEADER":
-        leader_redirect_url = get_leader_api_redirect_url(request.url.path)
-        if leader_redirect_url:
-            logger.info(f"Node {NODE_ID}: Not leader, redirecting to {leader_redirect_url}")
-            raise HTTPException(status_code=307, detail=f"Redirect to leader at {leader_redirect_url}",
-                                headers={"Location": leader_redirect_url})
-        else:
-            logger.error(f"Node {NODE_ID}: Not leader, but no leader API address found for redirection.")
-            raise HTTPException(status_code=503, detail="Not leader and leader address unknown.")
+    if result and result.get('status') == 'success':
+        logger.info(f"Node {NODE_ID}: Message command processed successfully: {entry_data['data']['id']}")
+        # Assuming the 'id' in entry_data is the one to return, or result might contain a specific one.
+        return JSONResponse(content={"status": "success", "message_id": entry_data['data']['id'], "detail": "Message command processed."}, status_code=200)
     else:
-        logger.error(f"Node {NODE_ID}: Failed to propose command with unknown reason: {redirect_reason}")
-        raise HTTPException(status_code=500, detail="Failed to process command")
+        error_detail = result.get('message', 'Failed to process command by Raft') if result else 'No response from Raft'
+        logger.error(f"Node {NODE_ID}: Failed to process message command: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/messages", response_model=MessageResponse)
 async def create_message(
@@ -342,13 +384,17 @@ async def create_message(
             "room_id": message.room_id,
             "user_id": message.user_id,
             "content": message.content,
-            "message_type": "text", # Default, or add to MessageCreate if varied
+            "message_type": "text", 
             "timestamp": time.time()
         }
-        # raft_node_instance.record_entry is RaftNode.record_entry
-        # result = raft_node_instance.record_entry(entry_data)
-        result = raft_node_instance.handle_client_command(command=entry_data)
-        if result and result.get('success'):
+        
+        result = raft_node_instance.record_entry(
+            room_id=message.room_id,
+            user_id=message.user_id,
+            content=message.content,
+            msg_type="text"
+        )
+        if result and result.get('status') == 'success':
             logger.info(f"Message entry {entry_data['id']} accepted by Raft leader {NODE_ID}.")
             return {"status": "success", "message_id": entry_data['id'], "detail": "Message accepted by leader, pending replication."}
         else:
@@ -365,37 +411,137 @@ async def create_room(
     _ = Depends(redirect_if_not_leader), # Ensure request goes to leader
     db: Session = Depends(get_db)
 ):
-    if not raft_node_instance.state == "LEADER":
-        # This case should ideally be handled by the Depends(redirect_if_not_leader) but as a fallback
-        redirect_url = get_leader_api_redirect_url("/rooms")
-        if redirect_url:
-            return RedirectResponse(url=redirect_url, status_code=307)
-        raise HTTPException(status_code=503, detail="Not leader and leader API address unknown.")
-
     try:
-        # The command to be replicated by Raft
-        command_data = {
-            "action": "create_room",
-            "name": room_create.name,
-            "created_at": time.time() # Add created_at timestamp
-        }
-        logger.info(f"Node {NODE_ID}: Proposing room creation command to Raft: {command_data}")
+        # Generate a UUID for the room
+        room_id = str(uuid.uuid4())
+        # Generate a UUID for the creator (using a placeholder for now)
+        creator_id = str(uuid.uuid4())  # In a real app, this would come from authentication
+        created_at = time.time()
         
-        # Propose the command to the Raft cluster
-        result = raft_node_instance.handle_client_command(command=command_data)
+        logger.info(f"Node {NODE_ID}: Processing room creation command via DistributedSequencer: {room_create.name}")
+        
+        # Call record_entry with the parameters expected by DistributedSequencer
+        result = raft_node_instance.record_entry(
+            room_id=room_id,
+            user_id=creator_id,
+            content=room_create.name,  # Using content field for room name
+            msg_type="CREATE_ROOM"  # Using msg_type to indicate this is a room creation
+        )
 
-        if result and result.get('success'):
-            room_id = result.get('room_id') # Assuming Raft returns the ID of the created room
-            logger.info(f"Node {NODE_ID}: Room '{room_create.name}' created with ID {room_id} via Raft.")
-            return RoomResponse(status="success", room_id=room_id, name=room_create.name, created_at=command_data['created_at'])
+        if result and result.get('status') == 'replicated':
+            message_id = result.get('id')  # Get the message ID from the result
+            logger.info(f"Node {NODE_ID}: Room '{room_create.name}' processed via DistributedSequencer, ID {room_id}.")
+            return RoomResponse(status="success", room_id=room_id, name=room_create.name, created_at=created_at)
         else:
-            err_msg = result.get('message', 'Unknown error') if result else 'No response from Raft'
-            logger.error(f"Node {NODE_ID}: Raft failed to create room '{room_create.name}': {err_msg}")
+            err_msg = result.get('error', 'Unknown error') if result else 'No response from DistributedSequencer'
+            logger.error(f"Node {NODE_ID}: DistributedSequencer failed to process create room command for '{room_create.name}': {err_msg}")
             raise HTTPException(status_code=500, detail=f"Failed to create room: {err_msg}")
     except Exception as e:
         logger.error(f"Node {NODE_ID}: Error creating room '{room_create.name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "node_id": NODE_ID, "raft_state": raft_node_instance.state if raft_node_instance else "uninitialized"}
+
+@app.get("/raft_state", response_model=RaftState)
+async def get_raft_state():
+    if not raft_node_instance:
+        raise HTTPException(status_code=503, detail="Raft node not initialized.")
+    
+    return RaftState(
+        node_id=raft_node_instance.node_id,
+        current_term=raft_node_instance.current_term,
+        voted_for=raft_node_instance.voted_for,
+        commit_index=raft_node_instance.commit_index,
+        last_applied=raft_node_instance.last_applied,
+        role=raft_node_instance.state,
+        leader_id=raft_node_instance.leader_id,
+        log_size=len(raft_node_instance.log)
+    )
+
+@app.get("/nodes", response_model=List[NodeInfo])
+async def get_cluster_nodes():
+    nodes = []
+    # Include current node
+    nodes.append(NodeInfo(
+        id=NODE_ID,
+        api_address=f"http://{API_HOST}:{API_PORT}",
+        rpc_address=f"http://{CURRENT_NODE_RPC_ADDRESS[0]}:{CURRENT_NODE_RPC_ADDRESS[1]}",
+        role=raft_node_instance.state if raft_node_instance else "unknown",
+        term=raft_node_instance.current_term if raft_node_instance else None
+    ))
+    # Include peers
+    for peer_id in PEER_NODE_IDS:
+        peer_host, peer_port = app_config.get_node_address(peer_id)
+        # For API address, we assume a convention or fetch from Etcd if available
+        # For simplicity, let's assume API port is same as RPC port for now, or fetch from Etcd
+        # Here, we'll just use the RPC address as a placeholder for peer info
+        nodes.append(NodeInfo(
+            id=peer_id,
+            api_address="N/A", # Or fetch from Etcd if registered
+            rpc_address=f"http://{peer_host}:{peer_port}",
+            role="unknown", # Can't know peer's role directly from here without another RPC
+            term=None
+        ))
+    return nodes
+
+@app.get("/leader_api_address")
+async def get_leader_api_address():
+    if not etcd_client:
+        raise HTTPException(status_code=503, detail="Etcd client not available.")
+    try:
+        leader_api_url = await etcd_client.get_leader_api_endpoint()
+        if leader_api_url:
+            return {"leader_api_address": leader_api_url}
+        else:
+            raise HTTPException(status_code=404, detail="Leader API address not found.")
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error fetching leader API address from etcd: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error fetching leader API address from etcd.")
+
+@app.get("/leader_info")
+async def get_leader_information():
+    logger.info(f"Node {NODE_ID}: Received request for /leader_info")
+    if not etcd_client:
+        logger.error(f"Node {NODE_ID}: Etcd client not initialized. Cannot fetch leader info.")
+        raise HTTPException(status_code=503, detail="Etcd client not available.")
+    try:
+        leader_info = etcd_client.get_leader_info()
+        if leader_info:
+            logger.info(f"Node {NODE_ID}: Successfully fetched leader info from etcd: {leader_info}")
+            return leader_info
+        else:
+            logger.warning(f"Node {NODE_ID}: No leader information currently available in etcd.")
+            raise HTTPException(status_code=404, detail="Leader information not found.")
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error fetching leader information from etcd: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error fetching leader information from etcd.")
+
+@app.get("/rooms/{room_id}/messages")
+async def get_messages(room_id: str, db: Session = Depends(get_db)):
+    try:
+        # Query messages for the specified room, ordered by sequence number
+        messages = db.query(MessageModel).filter(MessageModel.room_id == room_id).order_by(MessageModel.sequence_number).all()
+        
+        # Convert database models to response models
+        response = [
+            {
+                "message_id": message.id,
+                "room_id": message.room_id,
+                "user_id": message.user_id,
+                "content": message.content,
+                "message_type": message.message_type,
+                "created_at": message.created_at,
+                "sequence_number": message.sequence_number
+            } for message in messages
+        ]
+        
+        return response
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error retrieving messages for room {room_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 async def health_check():

@@ -11,9 +11,9 @@ api_server:
   default_host: "127.0.0.1"
   # Per-node API port configuration. Values here are defaults if API_PORT is not set.
   ports:
-    node1: 9001
-    node2: 9002
-    node3: 9003
+    node1: 8001
+    node2: 8002
+    node3: 8003
     # Add more nodes as needed
 
 # Raft Consensus Algorithm settings
@@ -33,13 +33,13 @@ raft:
   nodes:
     - node_id: "node1"
       rpc_host: "127.0.0.1"
-      rpc_port: 8001
+      rpc_port: 5001
     - node_id: "node2"
       rpc_host: "127.0.0.1"
-      rpc_port: 8002
+      rpc_port: 5002
     - node_id: "node3"
       rpc_host: "127.0.0.1"
-      rpc_port: 8003
+      rpc_port: 5003
     # Add more nodes as needed, ensuring node_id is unique.
 
 # Database settings (for future use with Durable State Machine Storage)
