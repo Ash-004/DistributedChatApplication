@@ -124,3 +124,59 @@ class RaftRPCClient:
         except Exception as e:
             logger.error(f"Error appending entries to {self.base_url}: {str(e)}")
             return False, 0
+    
+    def record_entry(self, room_id: str, user_id: str, content: str, msg_type: str, timeout: float = 5.0) -> dict:
+        """
+        Send a RecordEntry RPC to the remote node.
+        
+        Args:
+            room_id: ID of the room where the message is being sent
+            user_id: ID of the user sending the message
+            content: Content of the message
+            msg_type: Type of the message (e.g., "text")
+            timeout: Timeout for the RPC call in seconds
+            
+        Returns:
+            Dictionary with the result of the operation
+        """
+        try:
+            url = f"{self.base_url}/record_entry"
+            data = {
+                "room_id": room_id,
+                "user_id": user_id,
+                "content": content,
+                "msg_type": msg_type
+            }
+            response = requests.post(url, json=data, timeout=timeout)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to record entry at {self.base_url}: {response.status_code}")
+                return {"status": "error", "message": f"Failed to record entry: HTTP {response.status_code}"}
+        except Exception as e:
+            logger.error(f"Error recording entry at {self.base_url}: {str(e)}")
+            return {"status": "error", "message": f"Error recording entry: {str(e)}"}
+            
+    def _make_request(self, endpoint: str, data: dict, timeout: float = 5.0) -> dict:
+        """
+        Generic method to make an RPC request to the remote node.
+        
+        Args:
+            endpoint: The endpoint to call (e.g., "record_entry")
+            data: The data to send in the request body
+            timeout: Timeout for the RPC call in seconds
+            
+        Returns:
+            Dictionary with the result of the operation
+        """
+        try:
+            url = f"{self.base_url}/{endpoint}"
+            response = requests.post(url, json=data, timeout=timeout)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to make request to {url}: {response.status_code}")
+                return {"status": "error", "message": f"Failed to make request: HTTP {response.status_code}"}
+        except Exception as e:
+            logger.error(f"Error making request to {url}: {str(e)}")
+            return {"status": "error", "message": f"Error making request: {str(e)}"}

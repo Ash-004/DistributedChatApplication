@@ -1,146 +1,203 @@
-'use client';
+"use client"
 
-import { useState, useEffect, useRef } from 'react';
-import { Message, MessageCreate, Room, fetchMessages, sendMessage } from '../api/chatApi';
-import ChatMessage from './ChatMessage';
+import type React from "react"
+
+import { useState, useEffect, useRef } from "react"
+import { type Message, type MessageCreate, type Room, fetchMessages, sendMessage } from "../api/chatApi"
+import ChatMessage from "./ChatMessage"
+import { v4 as uuidv4 } from "uuid"
 
 interface ChatRoomProps {
-  room: Room;
-  userId: string;
+  room: Room
+  userId: string
 }
 
 export default function ChatRoom({ room, userId }: ChatRoomProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [newMessage, setNewMessage] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [isSending, setIsSending] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [messages, setMessages] = useState<Message[]>([])
+  const [newMessage, setNewMessage] = useState("")
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [isSending, setIsSending] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  // Load messages when room changes
   useEffect(() => {
     if (room) {
-      loadMessages();
-      
-      // Poll for new messages every 3 seconds
-      const intervalId = setInterval(loadMessages, 3000);
-      return () => clearInterval(intervalId);
+      loadMessages()
+      const intervalId = setInterval(loadMessages, 3000)
+      return () => clearInterval(intervalId)
     }
-  }, [room.id]);
+  }, [room])
 
-  // Scroll to bottom when messages change
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    scrollToBottom()
+  }, [messages])
 
   const loadMessages = async () => {
-    if (!room) return;
-    
+    if (!room) return
+
     try {
-      setIsLoading(true);
-      const messageList = await fetchMessages(room.id);
-      setMessages(messageList);
-      setError(null);
+      setIsLoading(true)
+      const messageList = await fetchMessages(room.id)
+
+      setMessages((prevMessages) => {
+        const uniqueMessages = new Map()
+
+        prevMessages.forEach((msg) => uniqueMessages.set(msg.id, msg))
+        messageList.forEach((msg) => uniqueMessages.set(msg.id, msg))
+
+        return Array.from(uniqueMessages.values()).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+      })
+      setError(null)
     } catch (error) {
-      console.error(`Failed to load messages for room ${room.id}:`, error);
-      setError('Failed to load messages. Please try again.');
+      console.error(`Failed to load messages for room ${room.id}:`, error)
+      setError("Failed to load messages. Please try again.")
     } finally {
-      setIsLoading(false);
+      setIsLoading(false)
     }
-  };
+  }
 
   const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!newMessage.trim() || !room) return;
-    
+    e.preventDefault()
+
+    if (!newMessage.trim() || !room) return
+
     try {
-      setIsSending(true);
+      setIsSending(true)
       const messageData: MessageCreate = {
         room_id: room.id,
-        user_id: userId,
-        content: newMessage.trim()
-      };
-      
-      await sendMessage(messageData);
-      setNewMessage('');
-      
-      // Immediately load messages to show the new message
-      await loadMessages();
+        user_id: userId || uuidv4(),
+        content: newMessage.trim(),
+      }
+
+      await sendMessage(messageData)
+      setNewMessage("")
+      await loadMessages()
     } catch (error) {
-      console.error('Failed to send message:', error);
-      setError('Failed to send message. Please try again.');
+      console.error("Failed to send message:", error)
+      setError("Failed to send message. Please try again.")
     } finally {
-      setIsSending(false);
+      setIsSending(false)
     }
-  };
+  }
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="bg-white border-b border-gray-200 p-4">
-        <h2 className="font-semibold text-xl">{room.name}</h2>
+    <div className="flex flex-col h-full relative">
+      {/* Room header */}
+      <div className="glass-premium p-6 shadow-2xl border-b border-white/10 backdrop-blur-2xl">
+        <div className="flex items-center">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-r from-cyan-500 to-purple-600 flex items-center justify-center text-white font-bold text-xl mr-4 shadow-xl">
+            {room.name.substring(0, 1).toUpperCase()}
+          </div>
+          <div>
+            <h2 className="font-bold text-2xl text-white mb-1">{room.name}</h2>
+            <p className="text-white/70 font-medium">Created by: {room.created_by || "Unknown"}</p>
+          </div>
+        </div>
       </div>
-      
-      <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
+
+      {/* Messages area */}
+      <div className="flex-1 overflow-y-auto p-8 scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent relative">
+        {/* Background decoration */}
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-white/2 to-transparent pointer-events-none"></div>
+
         {isLoading && messages.length === 0 ? (
-          <div className="flex justify-center items-center h-20">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+          <div className="flex justify-center items-center h-full">
+            <div className="relative">
+              <div className="w-16 h-16 border-4 border-white/20 border-t-cyan-400 rounded-full animate-spin"></div>
+              <div className="absolute inset-0 w-16 h-16 border-4 border-transparent border-t-purple-400 rounded-full animate-spin animate-reverse"></div>
+            </div>
           </div>
         ) : messages.length === 0 ? (
-          <div className="text-center text-gray-500 py-8">
-            No messages yet. Be the first to say something!
+          <div className="flex flex-col items-center justify-center h-full text-center animate-fade-in-up">
+            <div className="glass-premium rounded-3xl p-16 border border-white/20 max-w-md">
+              <div className="relative w-24 h-24 mb-8 mx-auto">
+                <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-purple-500 rounded-full animate-pulse-glow"></div>
+                <div className="relative bg-gradient-to-r from-cyan-500 to-purple-600 rounded-full h-full w-full flex items-center justify-center shadow-2xl">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-12 w-12 text-white"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.5}
+                      d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                    />
+                  </svg>
+                </div>
+              </div>
+              <p className="text-2xl font-bold mb-4 text-white">Start the conversation</p>
+              <p className="text-white/70 text-lg">Be the first to share your thoughts!</p>
+            </div>
           </div>
         ) : (
-          <div>
-            {messages.map((message) => (
-              <ChatMessage 
-                key={message.id}
-                message={message}
-                isCurrentUser={message.user_id === userId}
-              />
+          <div className="space-y-6 relative z-10">
+            {messages.map((message, index) => (
+              <div key={message.id} className="animate-slide-in" style={{ animationDelay: `${index * 50}ms` }}>
+                <ChatMessage message={message} isCurrentUser={message.user_id === userId} />
+              </div>
             ))}
             <div ref={messagesEndRef} />
           </div>
         )}
-        
+
         {error && (
-          <div className="bg-red-100 text-red-700 p-3 rounded mb-4">
+          <div className="fixed bottom-24 left-1/2 transform -translate-x-1/2 bg-red-500/20 border border-red-500/30 text-red-200 p-4 rounded-2xl text-sm backdrop-blur-xl shadow-2xl animate-bounce-in z-50">
             {error}
           </div>
         )}
       </div>
-      
-      <div className="p-4 bg-white border-t border-gray-200">
-        <form onSubmit={handleSendMessage} className="flex gap-2">
+
+      {/* Message input area */}
+      <div className="glass-premium p-6 border-t border-white/10 backdrop-blur-2xl">
+        <form onSubmit={handleSendMessage} className="flex gap-4">
           <input
             type="text"
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
             placeholder="Type your message..."
-            className="flex-1 p-2 border rounded"
+            className="flex-1 bg-white/10 border border-white/20 rounded-2xl px-6 py-4 text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-transparent transition-all duration-300 backdrop-blur-sm text-lg font-medium"
             disabled={isSending}
           />
           <button
             type="submit"
             disabled={!newMessage.trim() || isSending}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded disabled:bg-blue-400"
+            className="bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 disabled:from-gray-500 disabled:to-gray-600 text-white px-8 py-4 rounded-2xl font-bold transition-all duration-300 transform hover:scale-105 disabled:scale-100 shadow-xl hover:shadow-2xl flex items-center gap-3 text-lg border border-white/20"
           >
             {isSending ? (
-              <span className="flex items-center">
-                <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
+              <>
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
                 Sending
-              </span>
-            ) : 'Send'}
+              </>
+            ) : (
+              <>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                  />
+                </svg>
+                Send
+              </>
+            )}
           </button>
         </form>
       </div>
     </div>
-  );
+  )
 }

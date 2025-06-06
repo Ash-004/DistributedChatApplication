@@ -427,15 +427,25 @@ async def create_room(
             content=room_create.name,  # Using content field for room name
             msg_type="CREATE_ROOM"  # Using msg_type to indicate this is a room creation
         )
-
-        if result and result.get('status') == 'replicated':
-            message_id = result.get('id')  # Get the message ID from the result
-            logger.info(f"Node {NODE_ID}: Room '{room_create.name}' processed via DistributedSequencer, ID {room_id}.")
-            return RoomResponse(status="success", room_id=room_id, name=room_create.name, created_at=created_at)
+        if 'error' in result or not result.get('id'):
+            err_msg = result.get('error', 'Unknown error')
+            logger.error(f"Node {NODE_ID}: Failed to create room '{room_create.name}': {err_msg}")
+            return RoomResponse(
+                status="error",
+                room_id=room_id,
+                name=room_create.name,
+                created_at=created_at,
+                error=err_msg
+            )
         else:
-            err_msg = result.get('error', 'Unknown error') if result else 'No response from DistributedSequencer'
-            logger.error(f"Node {NODE_ID}: DistributedSequencer failed to process create room command for '{room_create.name}': {err_msg}")
-            raise HTTPException(status_code=500, detail=f"Failed to create room: {err_msg}")
+            logger.info(f"Node {NODE_ID}: Room '{room_create.name}' created successfully with ID {room_id}")
+            return RoomResponse(
+                status="success",
+                room_id=room_id,
+                name=room_create.name,
+                created_at=created_at
+            )
+        
     except Exception as e:
         logger.error(f"Node {NODE_ID}: Error creating room '{room_create.name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -492,7 +502,7 @@ async def get_leader_api_address():
     if not etcd_client:
         raise HTTPException(status_code=503, detail="Etcd client not available.")
     try:
-        leader_api_url = await etcd_client.get_leader_api_endpoint()
+        leader_api_url = etcd_client.get_leader_api_endpoint()  # Removed await as this is a synchronous method
         if leader_api_url:
             return {"leader_api_address": leader_api_url}
         else:
@@ -594,7 +604,7 @@ async def get_leader_api_address():
     if not etcd_client:
         raise HTTPException(status_code=503, detail="Etcd client not available.")
     try:
-        leader_api_url = await etcd_client.get_leader_api_endpoint()
+        leader_api_url = etcd_client.get_leader_api_endpoint()
         if leader_api_url:
             return {"leader_api_address": leader_api_url}
         else:
@@ -621,9 +631,54 @@ async def get_leader_information():
         logger.error(f"Node {NODE_ID}: Error fetching leader information from etcd: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error fetching leader information from etcd.")
 
+@app.get("/rooms")
+async def get_rooms(db: Session = Depends(get_db)):
+    try:
+        # Check if we need to redirect to leader
+        redirect_url = get_leader_api_redirect_url("/rooms")
+        if redirect_url:
+            return RedirectResponse(url=redirect_url, status_code=307)
+            
+        # Query all rooms from the database
+        rooms = db.query(RoomModel).all()
+        
+        # Convert database models to response format expected by frontend
+        response = [
+            {
+                "id": room.id,
+                "name": room.name,
+                "created_by": "Unknown",  # This field isn't stored in our model, using placeholder
+                "created_at": str(room.created_at)
+            } for room in rooms
+        ]
+        
+        logger.info(f"Node {NODE_ID}: Successfully retrieved {len(rooms)} rooms")
+        return response
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error retrieving rooms: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/leader_info")
+async def get_leader_information():
+    logger.info(f"Node {NODE_ID}: Received request for /leader_info")
+    if not etcd_client:
+        logger.error(f"Node {NODE_ID}: Etcd client not initialized. Cannot fetch leader info.")
+        raise HTTPException(status_code=503, detail="Etcd client not available.")
+    try:
+        leader_info = etcd_client.get_leader_info()
+        if leader_info:
+            logger.info(f"Node {NODE_ID}: Successfully fetched leader info from etcd: {leader_info}")
+            return leader_info
+        else:
+            logger.warning(f"Node {NODE_ID}: No leader information currently available in etcd.")
+            raise HTTPException(status_code=404, detail="Leader information not found.")
+    except Exception as e:
+        logger.error(f"Node {NODE_ID}: Error fetching leader information from etcd: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error fetching leader information from etcd.")
+
 # --- Main Execution ---
 if __name__ == "__main__":
 
 
     logger.info(f"Starting Uvicorn API server for node {NODE_ID} on {API_HOST}:{API_PORT}")
-    uvicorn.run(app, host=API_HOST, port=API_PORT, log_config=None) # Pass log_config=None if already configured
+    uvicorn.run("server.cmd.api_server:app", host=API_HOST, port=API_PORT, log_config=None, reload=True)

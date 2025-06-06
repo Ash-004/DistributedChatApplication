@@ -1789,12 +1789,20 @@ class DistributedSequencer(RaftNode):
         # Add any DistributedSequencer specific post-application logic here, e.g.,
         # checking database state, triggering application-level callbacks, etc.
 
-    def record_entry(self, entry_data: Dict[str, Any]):
+    def record_entry(self, room_id=None, user_id=None, content=None, msg_type=None, entry_data=None):
         """
         Client-facing method to record a new entry (command).
         Forwards to leader if not the leader. Appends to log if leader.
         
+        This method can be called in two ways:
+        1. With individual parameters (room_id, user_id, content, msg_type) - for backward compatibility
+        2. With a dictionary (entry_data) containing the command and its data
+        
         Args:
+            room_id: ID of the room where the message is being sent
+            user_id: ID of the user sending the message
+            content: Content of the message
+            msg_type: Type of the message (e.g., "text")
             entry_data: The dictionary containing the command and its data.
                         e.g., {'type': 'SEND_MESSAGE', 'data': {'room_id': ..., 'user_id': ..., 'content': ...}}
                               {'type': 'CREATE_ROOM', 'data': {'name': ..., 'creator_id': ...}}
@@ -1803,6 +1811,34 @@ class DistributedSequencer(RaftNode):
             A dictionary with status information and relevant details (e.g., message ID, sequence number).
             Returns {"status": "error", "message": "Not leader"} if not the leader.
         """
+        # If individual parameters are provided, convert them to the expected dictionary format
+        if entry_data is None and room_id is not None and user_id is not None and content is not None:
+            # Determine the command type based on msg_type
+            command_type = msg_type or 'text'
+            
+            # Create the entry_data dictionary based on the command type
+            if command_type == 'CREATE_ROOM':
+                entry_data = {
+                    'type': 'CREATE_ROOM', # Raft command type
+                    'id': str(uuid.uuid4()),  # Unique ID for this specific log entry/operation
+                    'room_id': str(room_id), # ID of the room to be created
+                    'user_id': str(user_id), # ID of the user creating the room
+                    'content': content,  # Room name
+                    'msg_type': 'CREATE_ROOM', # Message type for PersistentSequencer
+                    'timestamp': time.time()
+                }
+            else:  # Default to SEND_MESSAGE
+                # For SEND_MESSAGE, the structure was already flat and correct, but we ensure consistency
+                # if it was also nested previously. Assuming it needs to be flat like CREATE_ROOM now.
+                entry_data = {
+                    'type': 'SEND_MESSAGE', # Raft command type
+                    'id': str(uuid.uuid4()),  # Generate a unique ID for the message
+                    'room_id': str(room_id),
+                    'user_id': str(user_id),
+                    'content': content,
+                    'msg_type': command_type, # Actual message type (e.g., 'text')
+                    'timestamp': time.time()
+                }
         # Check if this node is the leader
         if self.state != 'LEADER':
             # If not the leader, forward the request to the current leader
@@ -1966,8 +2002,19 @@ class DistributedSequencer(RaftNode):
 
         logging.info(f"Node {self.node_id} forwarding command {command_data.get('type')} to leader {leader_id} at {leader_address}")
         try:
-            # Send the command_data dictionary as the request body to the record_entry endpoint.
-            response = leader_client._make_request("record_entry", command_data) 
+            # Check if this is a SEND_MESSAGE command with the expected structure
+            if command_data.get('type') == 'SEND_MESSAGE' and 'data' in command_data:
+                data = command_data['data']
+                # Use the specific record_entry method for SEND_MESSAGE commands
+                response = leader_client.record_entry(
+                    room_id=data.get('room_id'),
+                    user_id=data.get('user_id'),
+                    content=data.get('content'),
+                    msg_type=data.get('msg_type', 'text')
+                )
+            else:
+                # For other command types or if the structure is different, use the generic _make_request method
+                response = leader_client._make_request("record_entry", command_data) 
             
             if response is None:
                  logging.warning(f"Node {self.node_id}: Leader {leader_id} did not respond to forwarded command.")

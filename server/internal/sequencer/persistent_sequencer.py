@@ -141,7 +141,7 @@ class DistributedSequencer(RaftNode):
 
     def record_entry(self, room_id, user_id, content, msg_type):
         if self.state != 'LEADER':
-            raise Exception("Not leader")
+            raise NotLeaderException("Not leader", self.leader_id)
             
         entry_data = {
             'id': str(uuid.uuid4()),
@@ -152,14 +152,13 @@ class DistributedSequencer(RaftNode):
             'timestamp': time.time()
         }
         
-        # Use the RaftNode's append_entries to replicate the command
-        # This will add the entry to the Raft log and replicate it
-        # The actual sequence number will be assigned when applied to the WAL
+        # Use the RaftNode's propose_command to properly handle the client command
         try:
-            self.append_entries(leader_id=self.node_id, term=self.current_term, prev_log_index=len(self.log) - 1, 
-                                prev_log_term=self.log[-1]['term'] if self.log else 0, 
-                                entries=[{'entry': entry_data, 'term': self.current_term}], leader_commit=self.commit_index)
-            return {'id': entry_data['id'], 'status': 'replicated'}
+            success, error = self.propose_command(entry_data)
+            if success:
+                return {'id': entry_data['id'], 'status': 'success'}
+            else:
+                return {'error': error or 'Unknown error'}
         except NotLeaderException as e:
             return {'error': 'Not leader', 'leader_address': e.leader_addr}
         except Exception as e:

@@ -1,7 +1,7 @@
 // API client for the distributed chat application
 
 // Default to connecting to the first node's actual port
-let API_BASE_URL = 'http://localhost:9004';
+let API_BASE_URL = 'http://127.0.0.1:8080';
 
 export interface Room {
   id: string;
@@ -20,6 +20,7 @@ export interface Message {
 }
 
 export interface MessageCreate {
+  id?: string; // Optional ID field, will be generated if not provided
   room_id: string;
   user_id: string;
   content: string;
@@ -67,12 +68,18 @@ export const fetchRooms = async (): Promise<Room[]> => {
 
 export const createRoom = async (room: RoomCreate): Promise<Room> => {
   try {
+    // Add an ID field if not provided
+    const roomData = {
+      ...room,
+      id: room.id || crypto.randomUUID()
+    };
+
     const response = await fetch(`${API_BASE_URL}/rooms`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(room),
+      body: JSON.stringify(roomData),
     });
     
     // Handle redirect to leader if needed
@@ -100,7 +107,7 @@ export const createRoom = async (room: RoomCreate): Promise<Room> => {
 
 export const fetchMessages = async (roomId: string): Promise<Message[]> => {
   try {
-    const response = await fetch(`${API_BASE_URL}/messages/${roomId}`);
+    const response = await fetch(`${API_BASE_URL}/rooms/${roomId}/messages`);
     
     // Handle redirect to leader if needed
     if (response.status === 307) {
@@ -118,15 +125,28 @@ export const fetchMessages = async (roomId: string): Promise<Message[]> => {
       throw new Error(`Failed to fetch messages: ${response.status}`);
     }
     
-    // Extract the messages array from the response
+    // Process the response data
     const responseData = await response.json();
-    if (responseData && Array.isArray(responseData.messages)) {
-      return responseData.messages;
+    let rawMessages: any[] = [];
+
+    if (Array.isArray(responseData)) {
+      rawMessages = responseData;
+    } else if (responseData && Array.isArray(responseData.messages)) {
+      rawMessages = responseData.messages;
     } else {
-      // In case the API doesn't return the expected structure, return an empty array
-      console.warn('API response did not contain a messages array:', responseData);
+      console.warn('API response did not contain messages in expected format:', responseData);
       return [];
     }
+
+    // Map raw messages to the Message interface
+    return rawMessages.map((msg: any): Message => ({
+      id: msg.message_id,
+      room_id: msg.room_id,
+      user_id: msg.user_id,
+      content: msg.content,
+      message_type: msg.message_type,
+      timestamp: msg.created_at,
+    }));
   } catch (error) {
     console.error(`Error fetching messages for room ${roomId}:`, error);
     throw error;
@@ -135,12 +155,18 @@ export const fetchMessages = async (roomId: string): Promise<Message[]> => {
 
 export const sendMessage = async (message: MessageCreate): Promise<{ message_id: string }> => {
   try {
+    // Add an ID field if not provided
+    const messageData = {
+      ...message,
+      id: message.id || crypto.randomUUID()
+    };
+
     const response = await fetch(`${API_BASE_URL}/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(message),
+      body: JSON.stringify(messageData),
     });
     
     // Handle redirect to leader if needed
