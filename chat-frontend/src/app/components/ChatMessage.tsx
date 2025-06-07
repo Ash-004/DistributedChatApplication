@@ -26,10 +26,10 @@ export default function ChatMessage({ message, isCurrentUser }: ChatMessageProps
   }
 
   return (
-    <div className={`flex ${isCurrentUser ? "justify-end" : "justify-start"} mb-6 group`}>
+    <div className={`flex ${isCurrentUser ? "justify-end" : "justify-start"} mb-6 group animate-fade-in`}>
       {!isCurrentUser && (
         <div className="flex-shrink-0 mr-4">
-          <div className="h-12 w-12 rounded-2xl bg-gradient-to-r from-white/20 to-white/10 border border-white/20 flex items-center justify-center text-white font-bold text-sm shadow-lg backdrop-blur-sm">
+          <div className="h-12 w-12 rounded-2xl bg-secondary-background border border-white/20 flex items-center justify-center text-foreground font-bold text-sm shadow-lg backdrop-blur-sm">
             {message.user_id.substring(0, 2).toUpperCase()}
           </div>
         </div>
@@ -38,20 +38,20 @@ export default function ChatMessage({ message, isCurrentUser }: ChatMessageProps
       <div
         className={`max-w-[75%] rounded-3xl px-6 py-4 shadow-xl backdrop-blur-xl border transition-all duration-300 group-hover:scale-105 ${
           isCurrentUser
-            ? "bg-gradient-to-r from-cyan-500 to-purple-600 text-white rounded-tr-lg border-white/20 shadow-cyan-500/20"
-            : "bg-white/10 text-white rounded-tl-lg border-white/20 shadow-white/10"
+            ? "bg-accent-teal text-white rounded-tr-lg border-accent-teal/20 shadow-accent-teal/20"
+            : "bg-secondary-background text-foreground rounded-tl-lg border-white/20 shadow-white/10"
         }`}
       >
-        {!isCurrentUser && <div className="font-bold text-sm mb-2 text-white/80">{message.user_id}</div>}
+        {!isCurrentUser && <div className="font-bold text-sm mb-2 text-secondary-text">{message.user_id}</div>}
         <div className="whitespace-pre-wrap break-words text-lg leading-relaxed font-medium">{message.content}</div>
-        <div className={`text-sm ${isCurrentUser ? "text-cyan-100" : "text-white/60"} text-right mt-3 font-medium`}>
+        <div className={`text-sm ${isCurrentUser ? "text-white/80" : "text-secondary-text"} text-right mt-3 font-medium`}>
           {formatDate(message.timestamp)} {formatTime(message.timestamp)}
         </div>
       </div>
 
       {isCurrentUser && (
         <div className="flex-shrink-0 ml-4">
-          <div className="h-12 w-12 rounded-2xl bg-gradient-to-r from-cyan-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shadow-lg">
+          <div className="h-12 w-12 rounded-2xl bg-accent-teal flex items-center justify-center text-white font-bold text-sm shadow-lg">
             {message.user_id.substring(0, 2).toUpperCase()}
           </div>
         </div>

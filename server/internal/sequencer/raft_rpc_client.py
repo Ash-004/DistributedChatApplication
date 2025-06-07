@@ -6,36 +6,38 @@ from typing import Dict, Any, Tuple, Optional
 logger = logging.getLogger('raft.rpc.client')
 
 class RaftRPCClient:
+    """Client for making RPC calls to other Raft nodes in a distributed system.
+
+    Attributes:
+        host (str): The hostname or IP address of the remote Raft node.
+        port (int): The port number of the remote Raft node's RPC server.
+        base_url (str): The base URL for RPC requests (e.g., 'http://host:port').
     """
-    Client for making RPC calls to other Raft nodes.
-    This class handles the communication with other nodes in the Raft cluster.
-    """
+
     def __init__(self, host: str, port: int):
-        """
-        Initialize a new RaftRPCClient.
-        
+        """Initialize a new RaftRPCClient.
+
         Args:
-            host: The hostname or IP address of the remote Raft node
-            port: The port number of the remote Raft node's RPC server
+            host (str): The hostname or IP address of the remote Raft node.
+            port (int): The port number of the remote Raft node's RPC server.
         """
         self.host = host
         self.port = port
         self.base_url = f"http://{host}:{port}"
         logger.debug(f"Initialized RaftRPCClient for {self.base_url}")
-    
+
     def pre_vote(self, candidate_id: str, term: int, last_log_index: int, last_log_term: int, timeout: float = 5.0) -> Tuple[bool, int]:
-        """
-        Send a Pre-Vote RPC to the remote node.
-        
+        """Send a Pre-Vote RPC to the remote node.
+
         Args:
-            candidate_id: Candidate requesting pre-vote
-            term: Proposed term for which the candidate is seeking pre-votes
-            last_log_index: Index of candidate's last log entry
-            last_log_term: Term of candidate's last log entry
-            timeout: Timeout for the RPC call in seconds
-            
+            candidate_id (str): Candidate requesting pre-vote.
+            term (int): Proposed term for which the candidate is seeking pre-votes.
+            last_log_index (int): Index of candidate's last log entry.
+            last_log_term (int): Term of candidate's last log entry.
+            timeout (float, optional): Timeout for the RPC call in seconds. Defaults to 5.0.
+
         Returns:
-            Tuple of (vote_granted, term)
+            Tuple[bool, int]: A tuple of (vote_granted, term).
         """
         try:
             url = f"{self.base_url}/pre_vote"
@@ -55,19 +57,19 @@ class RaftRPCClient:
         except Exception as e:
             logger.error(f"Error requesting pre-vote from {self.base_url}: {str(e)}")
             return False, 0
-    
+
     def request_vote(self, term: int, candidate_id: str, last_log_index: int, last_log_term: int, timeout: float = 5.0) -> Tuple[bool, int]:
-        """
-        Send a RequestVote RPC to the remote node.
-        
+        """Send a RequestVote RPC to the remote node.
+
         Args:
-            term: Candidate's term
-            candidate_id: Candidate requesting vote
-            last_log_index: Index of candidate's last log entry
-            last_log_term: Term of candidate's last log entry
-            
+            term (int): Candidate's term.
+            candidate_id (str): Candidate requesting vote.
+            last_log_index (int): Index of candidate's last log entry.
+            last_log_term (int): Term of candidate's last log entry.
+            timeout (float, optional): Timeout for the RPC call in seconds. Defaults to 5.0.
+
         Returns:
-            Tuple of (vote_granted, term)
+            Tuple[bool, int]: A tuple of (vote_granted, term).
         """
         try:
             url = f"{self.base_url}/request_vote"
@@ -87,22 +89,22 @@ class RaftRPCClient:
         except Exception as e:
             logger.error(f"Error requesting vote from {self.base_url}: {str(e)}")
             return False, 0
-    
+
     def append_entries(self, term: int, leader_id: str, prev_log_index: int, prev_log_term: int, 
                       entries: list, leader_commit: int, timeout: float = 5.0) -> Tuple[bool, int]:
-        """
-        Send an AppendEntries RPC to the remote node.
-        
+        """Send an AppendEntries RPC to the remote node.
+
         Args:
-            term: Leader's term
-            leader_id: Leader's ID
-            prev_log_index: Index of log entry immediately preceding new ones
-            prev_log_term: Term of prev_log_index entry
-            entries: Log entries to store (empty for heartbeat)
-            leader_commit: Leader's commit index
-            
+            term (int): Leader's term.
+            leader_id (str): Leader's ID.
+            prev_log_index (int): Index of log entry immediately preceding new ones.
+            prev_log_term (int): Term of prev_log_index entry.
+            entries (list): Log entries to store (empty for heartbeat).
+            leader_commit (int): Leader's commit index.
+            timeout (float, optional): Timeout for the RPC call in seconds. Defaults to 5.0.
+
         Returns:
-            Tuple of (success, term)
+            Tuple[bool, int]: A tuple of (success, term).
         """
         try:
             url = f"{self.base_url}/append_entries"
@@ -124,20 +126,21 @@ class RaftRPCClient:
         except Exception as e:
             logger.error(f"Error appending entries to {self.base_url}: {str(e)}")
             return False, 0
-    
+
     def record_entry(self, room_id: str, user_id: str, content: str, msg_type: str, timeout: float = 5.0) -> dict:
-        """
-        Send a RecordEntry RPC to the remote node.
-        
+        """Send a RecordEntry RPC to the remote node.
+
         Args:
-            room_id: ID of the room where the message is being sent
-            user_id: ID of the user sending the message
-            content: Content of the message
-            msg_type: Type of the message (e.g., "text")
-            timeout: Timeout for the RPC call in seconds
-            
+            room_id (str): ID of the room where the message is being sent.
+            user_id (str): ID of the user sending the message.
+            content (str): Content of the message.
+            msg_type (str): Type of the message (e.g., "text").
+            timeout (float, optional): Timeout for the RPC call in seconds. Defaults to 5.0.
+
         Returns:
-            Dictionary with the result of the operation
+            dict: A dictionary with the result of the operation.
+                  If successful, returns the response from the remote node.
+                  If failed, returns {"status": "error", "message": error_message}.
         """
         try:
             url = f"{self.base_url}/record_entry"
@@ -156,18 +159,19 @@ class RaftRPCClient:
         except Exception as e:
             logger.error(f"Error recording entry at {self.base_url}: {str(e)}")
             return {"status": "error", "message": f"Error recording entry: {str(e)}"}
-            
+
     def _make_request(self, endpoint: str, data: dict, timeout: float = 5.0) -> dict:
-        """
-        Generic method to make an RPC request to the remote node.
-        
+        """Generic method to make an RPC request to the remote node.
+
         Args:
-            endpoint: The endpoint to call (e.g., "record_entry")
-            data: The data to send in the request body
-            timeout: Timeout for the RPC call in seconds
-            
+            endpoint (str): The endpoint to call (e.g., "record_entry").
+            data (dict): The data to send in the request body.
+            timeout (float, optional): Timeout for the RPC call in seconds. Defaults to 5.0.
+
         Returns:
-            Dictionary with the result of the operation
+            dict: A dictionary with the result of the operation.
+                  If successful, returns the response from the remote node.
+                  If failed, returns {"status": "error", "message": error_message}.
         """
         try:
             url = f"{self.base_url}/{endpoint}"

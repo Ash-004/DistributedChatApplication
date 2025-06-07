@@ -1,8 +1,4 @@
-# Distributed Chat Application Configuration Example
-# Copy this file to config.yaml and modify as needed.
-
-# General application settings
-log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level: "INFO"
 
 # API Server settings
 # The NODE_ID environment variable will determine which node's specific API port to use if defined below.
@@ -24,8 +20,8 @@ raft:
   # Heartbeat interval in milliseconds (should be less than election_timeout_min_ms)
   heartbeat_interval_ms: 150
   # Snapshot settings
-  snapshot_interval_s: 120  # Interval for taking snapshots, in seconds
-  snapshot_path_template: "raft_snapshots/snapshot_{node_id}.json" # Path template for snapshots. Ensure directory exists.
+  snapshot_interval_s: 120 
+  snapshot_path_template: "raft_snapshots/snapshot_{node_id}.json" 
 
   # List of all nodes in the Raft cluster.
   # The NODE_ID environment variable identifies the current node from this list.
@@ -42,22 +38,3 @@ raft:
       rpc_port: 5003
     # Add more nodes as needed, ensuring node_id is unique.
 
-# Database settings (for future use with Durable State Machine Storage)
-# database:
-#   type: "sqlite"  # e.g., "sqlite", "postgresql"
-#   # Connection string or parameters specific to the database type
-#   connection_string: "sqlite:///./chat_data_{node_id}.db"
-#   # For PostgreSQL, might look like:
-#   # host: "localhost"
-#   # port: 5432
-#   # user: "chat_user"
-#   # password: "secure_password"
-#   # dbname: "chat_db"
-
-# WebSocket settings (for future use with Real-time Client Communication)
-# websocket_server:
-#   default_host: "127.0.0.1"
-#   ports:
-#     node1: 9091
-#     node2: 9092
-#     node3: 9093

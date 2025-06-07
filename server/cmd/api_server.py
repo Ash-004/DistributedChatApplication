@@ -294,33 +294,42 @@ async def check_rpc_server_ready(node_id: str, host: str, port: int, retries: in
     return False
 
 # Dependency to ensure request is handled by the leader
-async def redirect_if_not_leader(request: Request):
+async def redirect_if_not_leader(request: Request, max_retries: int = 3, retry_delay_sec: float = 0.5):
     if raft_node_instance is None:
         logger.warning(f"Node {NODE_ID}: Raft node not initialized. Cannot determine leader status.")
         raise HTTPException(status_code=503, detail="Raft node not initialized.")
 
     if not raft_node_instance.state == "LEADER":
         logger.info(f"Node {NODE_ID}: Current node is a {raft_node_instance.state}. Redirecting to leader.")
-        # Attempt to get leader's API endpoint from Etcd
-        try:
-            leader_api_url = etcd_client.get_leader_api_endpoint() # Removed await
-            if leader_api_url:
-                # Construct the full redirect URL, preserving the original path and query parameters
-                # Ensure leader_api_url does not end with a slash if path starts with one, and vice-versa
-                full_redirect_url = f"{leader_api_url.rstrip('/')}{request.url.path}"
-                if request.url.query:
-                    full_redirect_url += f"?{request.url.query}"
-                logger.info(f"Node {NODE_ID}: Redirecting to leader at {full_redirect_url}")
-                raise HTTPException(status_code=307, detail=full_redirect_url) # Use 307 Temporary Redirect
-            else:
-                logger.error(f"Node {NODE_ID}: Leader API endpoint not found in Etcd for redirection.")
-                raise HTTPException(status_code=503, detail="Leader API endpoint not found.")
-        except HTTPException:
-            # Re-raise HTTPException to propagate redirects or other HTTP errors
-            raise
-        except Exception as e:
-            logger.error(f"Node {NODE_ID}: Error fetching leader info for redirection: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Error redirecting to leader.")
+        # Attempt to get leader's API endpoint from Etcd with retries
+        for attempt in range(max_retries):
+            try:
+                leader_api_url = etcd_client.get_leader_api_endpoint() # Removed await
+                if leader_api_url:
+                    # Construct the full redirect URL, preserving the original path and query parameters
+                    # Ensure leader_api_url does not end with a slash if path starts with one, and vice-versa
+                    full_redirect_url = f"{leader_api_url.rstrip('/')}{request.url.path}"
+                    if request.url.query:
+                        full_redirect_url += f"?{request.url.query}"
+                    logger.info(f"Node {NODE_ID}: Redirecting to leader at {full_redirect_url} (attempt {attempt + 1})")
+                    raise HTTPException(status_code=307, detail=full_redirect_url) # Use 307 Temporary Redirect
+                else:
+                    logger.warning(f"Node {NODE_ID}: Leader API endpoint not found in Etcd for redirection (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay_sec}s...")
+                    await asyncio.sleep(retry_delay_sec) # Use asyncio.sleep for async context
+
+            except HTTPException as http_exc:
+                # Re-raise HTTPException to propagate redirects or other HTTP errors immediately
+                raise http_exc
+            except Exception as e:
+                logger.error(f"Node {NODE_ID}: Error fetching leader info for redirection (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay_sec)
+                else:
+                    raise HTTPException(status_code=500, detail="Error redirecting to leader after multiple attempts.")
+        
+        # If loop finishes without returning/raising, it means leader was not found after all retries
+        logger.error(f"Node {NODE_ID}: Leader API endpoint not found after {max_retries} attempts.")
+        raise HTTPException(status_code=503, detail="Leader API endpoint not found after multiple retries.")
     return True # Current node is leader, proceed
 
 # --- FastAPI Routes ---

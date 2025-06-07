@@ -26,17 +26,17 @@ class WAL:
         self.lock = threading.Lock()
 
     def open(self) -> None:
-        # Create directory if it doesn't exist
+        
         directory = os.path.dirname(self.file_path)
         if directory and not os.path.exists(directory):
             os.makedirs(directory, exist_ok=True)
             
-        self.file = open(self.file_path, 'a+b')  # Open in binary mode for buffered writer
-        self.writer = io.BufferedWriter(self.file)  # Use BufferedWriter
+        self.file = open(self.file_path, 'a+b')  
+        self.writer = io.BufferedWriter(self.file)  
 
     def append(self, entry: Entry) -> None:
         with self.lock:
-            # Serialize the entry to JSON
+            
             data = json.dumps({
                 'id': str(entry.id),
                 'room_id': str(entry.room_id),
@@ -46,18 +46,18 @@ class WAL:
                 'message_type': entry.message_type,
                 'created_at': entry.created_at.isoformat()
             }).encode('utf-8')
-            # Write length and data
+            
             self.writer.write(len(data).to_bytes(4, 'little'))
             self.writer.write(data)
             self.writer.flush()
             os.fsync(self.file.fileno())
 
     def read_all(self) -> List[Entry]:
-        # Close the current file and writer if they exist
+        
         self.close()
         
         entries = []
-        # Open the file in read mode
+        
         try:
             with open(self.file_path, 'rb') as read_file:
                 reader = io.BufferedReader(read_file)
@@ -65,7 +65,7 @@ class WAL:
                     try:
                         length_bytes = reader.read(4)
                         if not length_bytes:
-                            break # End of file
+                            break 
                         length = int.from_bytes(length_bytes, 'little')
                         data = reader.read(length).decode('utf-8')
                         entry_data = json.loads(data)
@@ -79,14 +79,14 @@ class WAL:
                             created_at=datetime.fromisoformat(entry_data['created_at'])
                         ))
                     except Exception as e:
-                        # Log error or handle corrupted entry
+                        
                         print(f"Error reading WAL entry: {e}")
                         break
         except FileNotFoundError:
-            # If the file doesn't exist yet, just return an empty list
+            
             print(f"WAL file not found at {self.file_path}, creating a new one")
         
-        # Reopen in append mode for future writes
+        
         self.open()
         return entries
 

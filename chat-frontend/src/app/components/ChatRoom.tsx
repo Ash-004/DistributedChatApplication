@@ -22,6 +22,7 @@ export default function ChatRoom({ room, userId }: ChatRoomProps) {
 
   useEffect(() => {
     if (room) {
+      setMessages([])
       loadMessages()
       const intervalId = setInterval(loadMessages, 3000)
       return () => clearInterval(intervalId)
@@ -87,36 +88,36 @@ export default function ChatRoom({ room, userId }: ChatRoomProps) {
   return (
     <div className="flex flex-col h-full relative">
       {/* Room header */}
-      <div className="glass-premium p-6 shadow-2xl border-b border-white/10 backdrop-blur-2xl">
+      <div className="bg-primary-background p-6 shadow-2xl border-b border-white/10 backdrop-blur-2xl">
         <div className="flex items-center">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-r from-cyan-500 to-purple-600 flex items-center justify-center text-white font-bold text-xl mr-4 shadow-xl">
+          <div className="w-16 h-16 rounded-2xl bg-secondary-background flex items-center justify-center text-foreground font-bold text-xl mr-4 shadow-xl">
             {room.name.substring(0, 1).toUpperCase()}
           </div>
           <div>
-            <h2 className="font-bold text-2xl text-white mb-1">{room.name}</h2>
-            <p className="text-white/70 font-medium">Created by: {room.created_by || "Unknown"}</p>
+            <h2 className="font-semibold text-xl text-foreground mb-1">{room.name}</h2>
+            <p className="text-secondary-text text-sm">Created by: {room.created_by || "Unknown"}</p>
           </div>
         </div>
       </div>
 
       {/* Messages area */}
-      <div className="flex-1 overflow-y-auto p-8 scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent relative">
+      <div className="flex-1 overflow-y-auto p-8 scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent relative bg-primary-background">
         {/* Background decoration */}
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-white/2 to-transparent pointer-events-none"></div>
+        <div className="absolute inset-0 pointer-events-none"></div>
 
         {isLoading && messages.length === 0 ? (
           <div className="flex justify-center items-center h-full">
             <div className="relative">
-              <div className="w-16 h-16 border-4 border-white/20 border-t-cyan-400 rounded-full animate-spin"></div>
-              <div className="absolute inset-0 w-16 h-16 border-4 border-transparent border-t-purple-400 rounded-full animate-spin animate-reverse"></div>
+              <div className="w-16 h-16 border-4 border-white/20 border-t-accent-teal rounded-full animate-spin"></div>
+              <div className="absolute inset-0 w-16 h-16 border-4 border-transparent border-t-accent-purple rounded-full animate-spin animate-reverse"></div>
             </div>
           </div>
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center animate-fade-in-up">
-            <div className="glass-premium rounded-3xl p-16 border border-white/20 max-w-md">
+            <div className="bg-secondary-background rounded-3xl p-16 border border-white/10 max-w-md">
               <div className="relative w-24 h-24 mb-8 mx-auto">
-                <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-purple-500 rounded-full animate-pulse-glow"></div>
-                <div className="relative bg-gradient-to-r from-cyan-500 to-purple-600 rounded-full h-full w-full flex items-center justify-center shadow-2xl">
+                <div className="absolute inset-0 bg-accent-teal rounded-full animate-pulse-glow"></div>
+                <div className="relative bg-accent-purple rounded-full h-full w-full flex items-center justify-center shadow-2xl">
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
                     className="h-12 w-12 text-white"
@@ -133,8 +134,8 @@ export default function ChatRoom({ room, userId }: ChatRoomProps) {
                   </svg>
                 </div>
               </div>
-              <p className="text-2xl font-bold mb-4 text-white">Start the conversation</p>
-              <p className="text-white/70 text-lg">Be the first to share your thoughts!</p>
+              <p className="text-2xl font-bold mb-4 text-foreground">Start the conversation</p>
+              <p className="text-secondary-text text-lg">Be the first to share your thoughts!</p>
             </div>
           </div>
         ) : (
@@ -156,20 +157,28 @@ export default function ChatRoom({ room, userId }: ChatRoomProps) {
       </div>
 
       {/* Message input area */}
-      <div className="glass-premium p-6 border-t border-white/10 backdrop-blur-2xl">
+      <div className="bg-primary-background p-6 border-t border-white/10 backdrop-blur-2xl">
         <form onSubmit={handleSendMessage} className="flex gap-4">
           <input
             type="text"
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendMessage(e);
+              }
+            }}
             placeholder="Type your message..."
-            className="flex-1 bg-white/10 border border-white/20 rounded-2xl px-6 py-4 text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-transparent transition-all duration-300 backdrop-blur-sm text-lg font-medium"
+            className="flex-1 bg-secondary-background border border-white/10 rounded-2xl px-6 py-4 text-foreground placeholder-secondary-text focus:outline-none focus:ring-2 focus:ring-accent-teal focus:border-transparent transition-all duration-300 text-lg font-medium"
             disabled={isSending}
+            tabIndex={0}
           />
           <button
             type="submit"
             disabled={!newMessage.trim() || isSending}
-            className="bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 disabled:from-gray-500 disabled:to-gray-600 text-white px-8 py-4 rounded-2xl font-bold transition-all duration-300 transform hover:scale-105 disabled:scale-100 shadow-xl hover:shadow-2xl flex items-center gap-3 text-lg border border-white/20"
+            className="bg-accent-teal hover:bg-accent-purple disabled:bg-gray-700 text-white px-8 py-4 rounded-2xl font-bold transition-all duration-300 transform hover:scale-105 disabled:scale-100 shadow-xl hover:shadow-2xl flex items-center gap-3 text-lg border border-white/20"
+            tabIndex={0}
           >
             {isSending ? (
               <>

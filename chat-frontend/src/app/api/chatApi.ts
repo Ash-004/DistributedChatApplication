@@ -1,6 +1,3 @@
-// API client for the distributed chat application
-
-// Default to connecting to the first node's actual port
 let API_BASE_URL = 'http://127.0.0.1:8080';
 
 export interface Room {
@@ -20,7 +17,7 @@ export interface Message {
 }
 
 export interface MessageCreate {
-  id?: string; // Optional ID field, will be generated if not provided
+  id?: string; 
   room_id: string;
   user_id: string;
   content: string;
@@ -38,19 +35,19 @@ export const getApiBaseUrl = () => {
   return API_BASE_URL;
 };
 
-// API functions
+
 export const fetchRooms = async (): Promise<Room[]> => {
   try {
     const response = await fetch(`${API_BASE_URL}/rooms`);
-    // Handle redirect to leader if needed (307 status)
+    
     if (response.status === 307) {
       const redirectUrl = response.headers.get('Location');
       if (redirectUrl) {
-        // Extract the new base URL from the redirect
+        
         const urlObj = new URL(redirectUrl);
         const newBaseUrl = `${urlObj.protocol}//${urlObj.host}`;
         setApiBaseUrl(newBaseUrl);
-        // Retry with new base URL
+
         return fetchRooms();
       }
     }
@@ -68,37 +65,41 @@ export const fetchRooms = async (): Promise<Room[]> => {
 
 export const createRoom = async (room: RoomCreate): Promise<Room> => {
   try {
-    // Add an ID field if not provided
-    const roomData = {
-      ...room,
-      id: room.id || crypto.randomUUID()
-    };
-
     const response = await fetch(`${API_BASE_URL}/rooms`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(roomData),
+      body: JSON.stringify(room),
     });
-    
-    // Handle redirect to leader if needed
+
     if (response.status === 307) {
       const redirectUrl = response.headers.get('Location');
       if (redirectUrl) {
         const urlObj = new URL(redirectUrl);
         const newBaseUrl = `${urlObj.protocol}//${urlObj.host}`;
         setApiBaseUrl(newBaseUrl);
-        // Retry with new base URL
+
         return createRoom(room);
       }
     }
     
     if (!response.ok) {
-      throw new Error(`Failed to create room: ${response.status}`);
+      const errorBody = await response.text();
+      throw new Error(`Failed to create room: ${response.status} - ${errorBody}`);
     }
-    
-    return await response.json();
+
+    const roomResponse = await response.json();
+    if (roomResponse.status === "success") {
+      return {
+        id: roomResponse.room_id,
+        name: roomResponse.name,
+        created_by: "Unknown",
+        created_at: new Date(roomResponse.created_at * 1000).toISOString()
+      };
+    } else {
+      throw new Error(`Failed to create room: ${roomResponse.detail || 'Unknown server error'}`);
+    }
   } catch (error) {
     console.error('Error creating room:', error);
     throw error;
@@ -108,15 +109,14 @@ export const createRoom = async (room: RoomCreate): Promise<Room> => {
 export const fetchMessages = async (roomId: string): Promise<Message[]> => {
   try {
     const response = await fetch(`${API_BASE_URL}/rooms/${roomId}/messages`);
-    
-    // Handle redirect to leader if needed
+
     if (response.status === 307) {
       const redirectUrl = response.headers.get('Location');
       if (redirectUrl) {
         const urlObj = new URL(redirectUrl);
         const newBaseUrl = `${urlObj.protocol}//${urlObj.host}`;
         setApiBaseUrl(newBaseUrl);
-        // Retry with new base URL
+
         return fetchMessages(roomId);
       }
     }
@@ -124,8 +124,7 @@ export const fetchMessages = async (roomId: string): Promise<Message[]> => {
     if (!response.ok) {
       throw new Error(`Failed to fetch messages: ${response.status}`);
     }
-    
-    // Process the response data
+
     const responseData = await response.json();
     let rawMessages: any[] = [];
 
@@ -138,7 +137,6 @@ export const fetchMessages = async (roomId: string): Promise<Message[]> => {
       return [];
     }
 
-    // Map raw messages to the Message interface
     return rawMessages.map((msg: any): Message => ({
       id: msg.message_id,
       room_id: msg.room_id,
@@ -155,28 +153,27 @@ export const fetchMessages = async (roomId: string): Promise<Message[]> => {
 
 export const sendMessage = async (message: MessageCreate): Promise<{ message_id: string }> => {
   try {
-    // Add an ID field if not provided
+
     const messageData = {
       ...message,
       id: message.id || crypto.randomUUID()
     };
 
-    const response = await fetch(`${API_BASE_URL}/messages`, {
+    const response = await fetch(`${API_BASE_URL}/send_message`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(messageData),
     });
-    
-    // Handle redirect to leader if needed
+
     if (response.status === 307) {
       const redirectUrl = response.headers.get('Location');
       if (redirectUrl) {
         const urlObj = new URL(redirectUrl);
         const newBaseUrl = `${urlObj.protocol}//${urlObj.host}`;
         setApiBaseUrl(newBaseUrl);
-        // Retry with new base URL
+
         return sendMessage(message);
       }
     }

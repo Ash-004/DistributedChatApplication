@@ -3,6 +3,7 @@ import json
 import logging
 import threading
 import time
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -44,21 +45,32 @@ class EtcdClient:
 
         if self.node_id:
             self.node_key = f"/chat_app/nodes/{self.node_id}"
-        self.leader_key = "/chat_app/service/leader_api_endpoint"
+        self.leader_key = "/raft/leader" # Updated to align with the NGINX bridge plan
         self.leader_lease_id = None # Lease for the leader key, if we want it to expire
+        self.leader_heartbeat_thread = None
+        self.leader_heartbeat_stop_event = threading.Event()
+        self._leader_heartbeat_interval = 0 # Will be set by publish_leader_info
 
     def _connect(self):
-        try:
-            # etcd3.client can take a list of (host, port) tuples
-            self.etcd = etcd3.client(host=self.etcd_endpoints[0][0], port=self.etcd_endpoints[0][1])
-            # For multiple endpoints, you might want to iterate or use a load-balancing client if etcd3 supports it directly.
-            # For now, we use the first valid endpoint.
-            self.etcd.status() # Check connection
-            logger.info(f"Successfully connected to etcd at {self.etcd_endpoints[0][0]}:{self.etcd_endpoints[0][1]}. Type of self.etcd: {type(self.etcd)}")
-        except Exception as e:
-            logger.error(f"Failed to connect to etcd at {self.etcd_endpoints[0][0]}:{self.etcd_endpoints[0][1]}: {e}")
-            self.etcd = None
-            logger.error("Etcd client connection failed. All etcd operations will fail.")
+        """
+        Enhanced connection method with better error handling
+        """
+        last_error = None
+        
+        for host, port in self.etcd_endpoints:
+            try:
+                self.etcd = etcd3.client(host=host, port=port)
+                self.etcd.status()  # Test the connection
+                logger.info(f"Successfully connected to etcd at {host}:{port}")
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Failed to connect to etcd at {host}:{port}: {e}")
+                continue
+        
+        # If we get here, all endpoints failed
+        logger.error(f"Failed to connect to any etcd endpoint. Last error: {last_error}")
+        self.etcd = None
 
     def register_node(self, initial_role, ttl=30, heartbeat_interval=10):
         """
@@ -107,19 +119,43 @@ class EtcdClient:
 
     def _keep_alive(self, heartbeat_interval):
         logger.info(f"Starting etcd lease keep-alive thread for node {self.node_id} with interval {heartbeat_interval}s.")
+        retries = 0
+        max_retries = 5
+        base_delay = 0.1 # seconds
+
         while not self.heartbeat_stop_event.is_set():
             try:
                 if not self.etcd:
                     logger.error("Etcd client not connected. Cannot perform etcd operation.")
-                    break
+                    # Attempt to reconnect if not connected
+                    self._connect()
+                    if not self.etcd:
+                        # If still not connected, wait and retry
+                        delay = min(base_delay * (2 ** retries) + random.uniform(0, 0.1), 5) # Cap at 5 seconds
+                        logger.warning(f"Etcd client still not connected. Retrying in {delay:.2f}s...")
+                        time.sleep(delay)
+                        retries += 1
+                        if retries > max_retries:
+                            logger.error(f"Max retries reached for etcd connection. Stopping keep-alive for node {self.node_id}.")
+                            break
+                        continue # Skip to next iteration to re-check connection
+
                 if self.lease_id:
-                    self.etcd.refresh_lease(self.lease_id) # Corrected line
+                    self.etcd.refresh_lease(self.lease_id)
+                    retries = 0 # Reset retries on success
                 else:
                     logger.warning(f"Node {self.node_id}: No lease_id found for keep-alive. Stopping heartbeat.")
                     break
             except Exception as e:
-                logger.error(f"Error refreshing etcd lease for node {self.node_id}: {e}")
-                break
+                retries += 1
+                delay = min(base_delay * (2 ** retries) + random.uniform(0, 0.1), 5) # Cap at 5 seconds
+                logger.error(f"Error refreshing etcd lease for node {self.node_id}: {e}. Retrying in {delay:.2f}s... (Attempt {retries}/{max_retries})")
+                if retries > max_retries:
+                    logger.error(f"Max retries reached for refreshing etcd lease. Stopping keep-alive for node {self.node_id}.")
+                    break
+                time.sleep(delay)
+                continue # Continue to next iteration after delay
+
             time.sleep(heartbeat_interval)
         logger.info(f"Etcd lease keep-alive thread for node {self.node_id} stopped.")
 
@@ -155,27 +191,85 @@ class EtcdClient:
             logger.error(f"Failed to update role for node {self.node_id} in etcd: {e}")
             return False
 
-    def publish_leader_info(self, leader_api_address, ttl=30):
+    def update_node_role(self, new_role):
         """
-        Publishes the leader's API address to etcd with a lease.
+        Updates the role of the node in etcd with retry logic.
         Args:
-            leader_api_address (str): The API address of the current leader.
-            ttl (int): Time-to-live for the leader key lease in seconds.
+            new_role (str): The new role of the node.
         Returns:
-            bool: True if successful, False otherwise.
+            bool: True if update is successful, False otherwise.
         """
         if not self.etcd:
             logger.error("Etcd client not connected. Cannot perform etcd operation.")
             return False
-        if not self.etcd:
-            logger.error("Etcd client not connected. Cannot publish leader info.")
+        if not self.node_id:
+            logger.error("Node ID not set. Cannot update role.")
             return False
+
+        retries = 0
+        max_retries = 5
+        base_delay = 0.1
+
+        while retries < max_retries:
+            try:
+                # Get current node data to preserve other fields
+                value, _ = self.etcd.get(self.node_key)
+                if value:
+                    node_data = json.loads(value.decode('utf-8'))
+                    node_data["role"] = new_role
+                    node_data["last_updated"] = time.time()
+                    self.etcd.put(self.node_key, json.dumps(node_data), lease=self.lease_id)
+                    logger.info(f"Node {self.node_id} role updated to {new_role} in etcd.")
+                    return True
+                else:
+                    logger.warning(f"Node {self.node_id} not found in etcd. Attempting to re-register...")
+                    # Attempt to re-register the node if not found
+                    if self.register_node(initial_role=new_role, ttl=ETCD_LEASE_TTL, heartbeat_interval=ETCD_HEARTBEAT_INTERVAL):
+                        logger.info(f"Node {self.node_id} successfully re-registered with role {new_role}.")
+                        # After re-registration, try to update the role again in the next iteration
+                        continue
+                    else:
+                        logger.error(f"Failed to re-register node {self.node_id}.")
+                        retries += 1
+            except Exception as e:
+                retries += 1
+                delay = min(base_delay * (2 ** retries) + random.uniform(0, 0.1), 5)
+                logger.error(f"Error updating role for node {self.node_id} in etcd: {e}. Retrying in {delay:.2f}s... (Attempt {retries}/{max_retries})")
+                time.sleep(delay)
+
+        logger.error(f"Max retries reached. Failed to update role for node {self.node_id} to {new_role}.")
+        return False
+
+    def publish_leader_info(self, leader_api_address, ttl=30):
+        """
+        Publishes the leader's API address to etcd with a lease.
+        """
+        if not self.etcd:
+            logger.error("Etcd client not connected. Cannot perform etcd operation.")
+            return False
+        
+        logger.error(f"DEBUG: publish_leader_info called with ttl={ttl}")  # Temporary debug
         try:
+            # Stop existing leader heartbeat first
+            if self.leader_heartbeat_thread and self.leader_heartbeat_thread.is_alive():
+                self.leader_heartbeat_stop_event.set()
+                self.leader_heartbeat_thread.join(timeout=5)
+
             # Create a new lease for the leader key
-            logger.debug(f"Attempting to publish leader info. Type of self.etcd: {type(self.etcd)}")
             self.leader_lease_id = self.etcd.lease(ttl=ttl).id
             self.etcd.put(self.leader_key, leader_api_address, lease=self.leader_lease_id)
-            logger.info(f"Published leader info: {leader_api_address} with lease ID: {self.leader_lease_id}")
+            logger.info(f"Published leader info: {leader_api_address} to key: {self.leader_key} with lease ID: {self.leader_lease_id}")
+
+            # Start a new heartbeat thread with more frequent refreshes
+            self._leader_heartbeat_interval = max(ttl // 4, 2)  # Refresh 4 times per TTL, minimum 2 seconds
+            logger.error(f"DEBUG: calculated heartbeat interval={self._leader_heartbeat_interval}")  # Temporary debug
+            self.leader_heartbeat_stop_event.clear()
+            self.leader_heartbeat_thread = threading.Thread(
+                target=self._keep_leader_alive, 
+                args=(self._leader_heartbeat_interval, leader_api_address, ttl), 
+                daemon=True
+            )
+            self.leader_heartbeat_thread.start()
             return True
         except Exception as e:
             logger.error(f"Failed to publish leader info to etcd: {e}")
@@ -198,11 +292,103 @@ class EtcdClient:
         try:
             self.etcd.delete(self.leader_key)
             logger.info("Cleared leader info from etcd.")
+            # Stop the leader heartbeat thread if it's running
+            if self.leader_heartbeat_thread and self.leader_heartbeat_thread.is_alive():
+                self.leader_heartbeat_stop_event.set()
+                self.leader_heartbeat_thread.join()
             self.leader_lease_id = None # Clear the lease ID as well
             return True
         except Exception as e:
-            logger.error(f"Failed to clear leader info from etcd: {e}")
+            logger.error(f"Error clearing leader info from etcd: {e}")
             return False
+
+    def _keep_leader_alive(self, heartbeat_interval, leader_api_address, ttl):
+        """
+        Fixed version with better error handling and timing
+        """
+        logger.info(f"Starting etcd leader lease keep-alive thread with interval {heartbeat_interval}s.")
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+
+        while not self.leader_heartbeat_stop_event.is_set():
+            try:
+                if not self.etcd:
+                    logger.error("Etcd client not connected. Attempting to reconnect...")
+                    self._connect()
+                    if not self.etcd:
+                        consecutive_failures += 1
+                        if consecutive_failures > max_consecutive_failures:
+                            logger.error("Too many consecutive connection failures. Stopping leader keep-alive.")
+                            break
+                        self.leader_heartbeat_stop_event.wait(min(heartbeat_interval, 5))
+                        continue
+
+                # Check if the leader key exists and has the correct value
+                value, metadata = self.etcd.get(self.leader_key)
+                if not value or value.decode('utf-8') != leader_api_address:
+                    logger.warning(f"Leader key missing or incorrect. Current: {value.decode('utf-8') if value else 'None'}, Expected: {leader_api_address}. Re-publishing leader info.")
+                    try:
+                        new_leader_lease_id = self.etcd.lease(ttl=ttl).id
+                        self.etcd.put(self.leader_key, leader_api_address, lease=new_leader_lease_id)
+                        self.leader_lease_id = new_leader_lease_id
+                        logger.info(f"Successfully re-published leader info with new lease ID: {self.leader_lease_id}")
+                        consecutive_failures = 0
+                    except Exception as e:
+                        logger.error(f"Failed to re-publish leader info: {e}")
+                        consecutive_failures += 1
+                elif self.leader_lease_id:
+                    try:
+                        logger.debug(f"Attempting to refresh leader lease {self.leader_lease_id}...")
+                        self.etcd.refresh_lease(self.leader_lease_id)
+                        logger.debug(f"Successfully refreshed leader lease {self.leader_lease_id}")
+                        consecutive_failures = 0
+                    except Exception as e:
+                        logger.warning(f"Failed to refresh leader lease {self.leader_lease_id}: {e}. Attempting to re-publish.")
+                        try:
+                            new_leader_lease_id = self.etcd.lease(ttl=ttl).id
+                            self.etcd.put(self.leader_key, leader_api_address, lease=new_leader_lease_id)
+                            self.leader_lease_id = new_leader_lease_id
+                            logger.info(f"Re-published leader info with new lease ID after refresh failure: {self.leader_lease_id}")
+                            consecutive_failures = 0
+                        except Exception as re_e:
+                            logger.error(f"Failed to re-publish leader info after refresh failure: {re_e}")
+                            consecutive_failures += 1
+                else:
+                    logger.warning("No leader_lease_id found but key exists. Attempting to re-publish leader info to acquire a new lease.")
+                    try:
+                        new_leader_lease_id = self.etcd.lease(ttl=ttl).id
+                        self.etcd.put(self.leader_key, leader_api_address, lease=new_leader_lease_id)
+                        self.leader_lease_id = new_leader_lease_id
+                        logger.info(f"Re-published leader info with new lease ID: {self.leader_lease_id}")
+                        consecutive_failures = 0
+                    except Exception as e:
+                        logger.error(f"Failed to re-publish leader info when lease_id was missing: {e}")
+                        consecutive_failures += 1
+
+            except Exception as e:
+                consecutive_failures += 1
+                logger.error(f"Unhandled error in etcd leader keep-alive: {e}. Consecutive failures: {consecutive_failures}")
+                logger.exception("Full traceback for unhandled error in leader keep-alive:")
+                
+                if consecutive_failures > max_consecutive_failures:
+                    logger.error("Too many consecutive failures. Stopping leader keep-alive.")
+                    break
+                
+                try:
+                    logger.info("Attempting to reconnect etcd client after unhandled error.")
+                    self._connect()
+                except Exception as reconnect_error:
+                    logger.error(f"Reconnection failed after unhandled error: {reconnect_error}")
+                    logger.exception("Full traceback for etcd reconnection error after unhandled error:")
+
+            if not self.leader_heartbeat_stop_event.wait(heartbeat_interval):
+                continue
+            else:
+                break
+
+        logger.info("Etcd leader lease keep-alive thread stopped.")
+
+
 
     def clear_leader_info_if_self(self, current_api_address):
         """

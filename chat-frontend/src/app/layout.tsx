@@ -24,7 +24,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <body className="h-screen overflow-hidden antialiased font-sans">{children}</body>
+      <body className="antialiased font-sans">{children}</body>
     </html>
   )
 }

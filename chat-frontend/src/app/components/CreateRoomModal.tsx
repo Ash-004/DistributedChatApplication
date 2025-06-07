@@ -3,12 +3,12 @@
 import type React from "react"
 
 import { useState, useRef, useEffect } from "react"
-import { type RoomCreate, createRoom } from "../api/chatApi"
+import { type Room, type RoomCreate, createRoom } from "../api/chatApi"
 
 interface CreateRoomModalProps {
   isOpen: boolean
   onClose: () => void
-  onRoomCreated: (newRoom: any) => void
+  onRoomCreated: (newRoom: Room) => void
 }
 
 export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }: CreateRoomModalProps) {
@@ -85,14 +85,14 @@ export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }: Crea
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
       <div
         ref={modalRef}
-        className="glass-premium rounded-3xl shadow-2xl w-full max-w-md mx-4 overflow-hidden transform transition-all animate-scale-in border border-white/20"
+        className="bg-primary-background rounded-3xl shadow-2xl w-full max-w-md mx-4 overflow-hidden transform transition-all border border-white/20"
       >
-        <div className="bg-gradient-to-r from-cyan-500 to-purple-600 px-8 py-6">
-          <h3 className="text-2xl font-bold text-white">Create New Room</h3>
-          <p className="text-cyan-100 mt-2">Start a new conversation space</p>
+        <div className="bg-secondary-background px-8 py-6">
+          <h3 className="text-xl font-bold text-foreground">Create New Room</h3>
+          <p className="text-secondary-text mt-2">Start a new conversation space</p>
         </div>
 
         <form onSubmit={handleSubmit} className="p-8">
@@ -103,7 +103,7 @@ export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }: Crea
           )}
 
           <div className="mb-8">
-            <label htmlFor="roomName" className="block text-lg font-semibold text-white mb-3">
+            <label htmlFor="roomName" className="block text-lg font-semibold text-foreground mb-3">
               Room Name
             </label>
             <input
@@ -113,7 +113,7 @@ export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }: Crea
               value={roomName}
               onChange={(e) => setRoomName(e.target.value)}
               placeholder="Enter room name"
-              className="w-full p-4 border border-white/20 rounded-2xl focus:ring-2 focus:ring-cyan-400 focus:border-transparent transition-all bg-white/10 text-white placeholder-white/60 backdrop-blur-sm text-lg font-medium"
+              className="w-full p-4 border border-white/20 rounded-2xl focus:ring-2 focus:ring-accent-teal focus:border-transparent transition-all bg-white/10 text-foreground placeholder-secondary-text backdrop-blur-sm text-lg font-medium"
               disabled={isCreating}
             />
           </div>
@@ -122,7 +122,7 @@ export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }: Crea
             <button
               type="button"
               onClick={onClose}
-              className="px-8 py-4 border border-white/20 rounded-2xl text-white hover:bg-white/10 transition-all duration-300 font-semibold backdrop-blur-sm"
+              className="px-8 py-4 border border-white/20 rounded-2xl text-foreground hover:bg-white/10 transition-all duration-300 font-semibold backdrop-blur-sm"
               disabled={isCreating}
             >
               Cancel
@@ -130,7 +130,7 @@ export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }: Crea
             <button
               type="submit"
               disabled={!roomName.trim() || isCreating}
-              className="px-8 py-4 bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-white rounded-2xl transition-all duration-300 disabled:opacity-50 flex items-center font-semibold shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:scale-100"
+              className="px-8 py-4 bg-accent-teal hover:bg-accent-purple text-white rounded-2xl transition-all duration-300 disabled:opacity-50 flex items-center font-semibold shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:scale-100"
             >
               {isCreating ? (
                 <>
