@@ -10,6 +10,7 @@ api_server:
     node1: 8001
     node2: 8002
     node3: 8003
+    node4: 8004
     # Add more nodes as needed
 
 # Raft Consensus Algorithm settings
@@ -36,5 +37,8 @@ raft:
     - node_id: "node3"
       rpc_host: "127.0.0.1"
       rpc_port: 5003
+    - node_id: "node4"
+      rpc_host: "127.0.0.1"
+      rpc_port: 5004
     # Add more nodes as needed, ensuring node_id is unique.
 

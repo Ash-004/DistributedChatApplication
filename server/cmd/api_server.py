@@ -221,7 +221,7 @@ async def startup_event():
 async def shutdown_event():
     logger.info(f"Node {NODE_ID}: Shutting down...")
     if etcd_client:
-        await etcd_client.unregister_node(NODE_ID)
+        await etcd_client.deregister_node(NODE_ID)
         logger.info(f"Node {NODE_ID}: Unregistered from Etcd.")
     if raft_node_instance:
         raft_node_instance.stop()
@@ -690,4 +690,4 @@ if __name__ == "__main__":
 
 
     logger.info(f"Starting Uvicorn API server for node {NODE_ID} on {API_HOST}:{API_PORT}")
-    uvicorn.run("server.cmd.api_server:app", host=API_HOST, port=API_PORT, log_config=None, reload=True)
+    uvicorn.run("server.cmd.api_server:app", host=API_HOST, port=API_PORT, log_config=None, reload=False)

@@ -118,7 +118,7 @@ export default function CreateRoomModal({ isOpen, onClose, onRoomCreated }: Crea
             />
           </div>
 
-          <div className="flex justify-end gap-4">
+          <div className="flex justify-center gap-4">
             <button
               type="button"
               onClick={onClose}

@@ -15,6 +15,11 @@ raft:
       api_port: 8003
       rpc_host: 127.0.0.1
       rpc_port: 8006
+    - node_id: node4
+      api_host: 127.0.0.1
+      api_port: 8007
+      rpc_host: 127.0.0.1
+      rpc_port: 5004
 
 etcd_config:
   ttl: 30 # seconds, for node registration lease
